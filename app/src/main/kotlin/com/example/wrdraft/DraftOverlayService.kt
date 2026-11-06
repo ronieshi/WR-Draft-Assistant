@@ -139,7 +139,7 @@ class DraftOverlayService : Service() {
         val search = EditText(this).apply {
             hint = "Buscar campeón"
             textSize = 15f
-            singleLine = true
+            setSingleLine(true)
             setTextColor(Color.WHITE)
             setHintTextColor(Color.LTGRAY)
             setPadding(dp(10), 0, dp(10), 0)
