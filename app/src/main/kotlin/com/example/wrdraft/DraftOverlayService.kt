@@ -399,9 +399,9 @@ class DraftOverlayService : Service() {
             setPadding(dp(10), dp(9), dp(10), dp(9))
             background = roundedBackground(Color.rgb(48, 51, 65), dp(12))
         }
-        card.category?.let { category ->
+        listOfNotNull(card.role, card.category).takeIf { it.isNotEmpty() }?.let { labels ->
             container.addView(TextView(this).apply {
-                text = category
+                text = labels.joinToString(" · ")
                 textSize = 11f
                 setTextColor(Color.rgb(190, 177, 255))
             })
