@@ -13,9 +13,6 @@ object ChampionLinks {
     )
 
     private fun wildRiftCoreSlug(slug: String): String = wildRiftCoreSlugs[slug] ?: slug
-    private fun wildRiftFireSlug(slug: String): String =
-        if (slug == "nunu-and-willump") "nunu-willump" else slug
-
     fun wildRiftCoreBuildUrl(slug: String): String =
         "https://wildriftcore.com/en/champions/${wildRiftCoreSlug(slug)}/builds/"
 
@@ -27,9 +24,6 @@ object ChampionLinks {
 
     fun wildRiftCoreSynergiesUrl(slug: String): String =
         "https://wildriftcore.com/en/champions/${wildRiftCoreSlug(slug)}/synergies/"
-
-    fun wildRiftFireUrl(slug: String): String =
-        "https://www.wildriftfire.com/guide/${wildRiftFireSlug(slug)}"
 
     fun championIconUrl(slug: String): String =
         "https://wildriftcore.com/assets/champions/icons/${wildRiftCoreSlug(slug)}.webp"
