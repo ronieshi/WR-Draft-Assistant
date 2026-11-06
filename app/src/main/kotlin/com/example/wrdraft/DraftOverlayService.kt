@@ -278,7 +278,6 @@ class DraftOverlayService : Service() {
                     }
 
                     row.gravity = Gravity.CENTER_VERTICAL
-                    row.textSize = 16f
                     results.addView(row, LinearLayout.LayoutParams(
                         LinearLayout.LayoutParams.MATCH_PARENT,
                         dp(44),
