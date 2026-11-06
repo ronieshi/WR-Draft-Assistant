@@ -36,6 +36,7 @@ data class ChampionVisualCard(
     val iconUrl: String? = null,
     val rank: String? = null,
     val category: String? = null,
+    val role: String? = null,
     val items: List<ChampionVisualItem> = emptyList(),
 )
 
@@ -169,9 +170,28 @@ object ChampionSectionRepository {
     }
 
     private fun parseCounterCards(html: String, sourceUrl: String): List<ChampionVisualCard> {
+        val panels = ROLE_COUNTER_PANEL_REGEX.findAll(html).toList()
+        if (panels.isEmpty()) return parseCounterPanel(html, sourceUrl, role = null)
+
+        val activeRole = ACTIVE_COUNTER_ROLE_REGEX.find(html)?.groupValues?.getOrNull(1)
+        val roleCards = panels.mapIndexed { index, panel ->
+            val end = panels.getOrNull(index + 1)?.range?.first ?: html.length
+            val role = roleLabel(panel.groupValues[1])
+            role to parseCounterPanel(html.substring(panel.range.first, end), sourceUrl, role)
+        }
+        val orderedRoleCards = if (activeRole == null) roleCards else roleCards.sortedBy { (role, _) ->
+            if (role.equals(roleLabel(activeRole), ignoreCase = true)) 0 else 1
+        }
+        return orderedRoleCards.flatMap { it.second }
+    }
+
+    private fun parseCounterPanel(
+        html: String,
+        sourceUrl: String,
+        role: String?,
+    ): List<ChampionVisualCard> {
         val cards = mutableListOf<ChampionVisualCard>()
-        val bestPicks = BEST_PICKS_REGEX.find(html)?.groupValues?.getOrNull(1)
-        bestPicks?.let { list ->
+        BEST_PICKS_REGEX.find(html)?.groupValues?.getOrNull(1)?.let { list ->
             BEST_PICK_REGEX.findAll(list).forEach { match ->
                 val entry = match.groupValues[1]
                 val name = textFrom(entry, BEST_PICK_NAME_REGEX) ?: return@forEach
@@ -181,12 +201,12 @@ object ChampionSectionRepository {
                     rank = textFrom(entry, RANK_REGEX),
                     category = "Mejores elecciones",
                     detail = textFrom(entry, EDGE_REGEX)?.let { "Ventaja $it" },
+                    role = role,
                 )
             }
         }
 
-        val avoidSection = AVOID_SECTION_REGEX.find(html)?.groupValues?.getOrNull(1)
-        avoidSection?.let { block ->
+        AVOID_SECTION_REGEX.find(html)?.groupValues?.getOrNull(1)?.let { block ->
             AVOID_LINE_REGEX.findAll(block).forEach { match ->
                 val entry = match.groupValues[1]
                 val name = textFrom(entry, BOLD_TEXT_REGEX) ?: return@forEach
@@ -195,19 +215,19 @@ object ChampionSectionRepository {
                     iconUrl = imageUrl(entry, sourceUrl),
                     rank = textFrom(entry, EDGE_REGEX),
                     category = "Evitar contra este campeón",
+                    role = role,
                 )
             }
         }
 
-        val keyItemSection = KEY_ITEM_SECTION_REGEX.find(html)?.groupValues?.getOrNull(1)
-        keyItemSection?.let { block ->
-            val name = textFrom(block, BOLD_TEXT_REGEX)
-            if (name != null) {
+        KEY_ITEM_SECTION_REGEX.find(html)?.groupValues?.getOrNull(1)?.let { block ->
+            textFrom(block, BOLD_TEXT_REGEX)?.let { name ->
                 cards += ChampionVisualCard(
                     title = name,
                     subtitle = textFrom(block, SMALL_TEXT_REGEX),
                     iconUrl = imageUrl(block, sourceUrl),
                     category = "Objeto clave",
+                    role = role,
                 )
             }
         }
@@ -236,7 +256,32 @@ object ChampionSectionRepository {
         return cards
     }
 
-    private fun parseBuildCards(html: String, sourceUrl: String): List<ChampionVisualCard> =
+    private fun parseBuildCards(html: String, sourceUrl: String): List<ChampionVisualCard> {
+        val roleLabels = BUILD_ROLE_NAV_REGEX.find(html)?.groupValues?.getOrNull(1)
+            ?.let { nav ->
+                BUILD_ROLE_LABEL_REGEX.findAll(nav)
+                    .map { roleLabel(plainText(it.groupValues[1])) }
+                    .toList()
+            }
+            .orEmpty()
+        val panels = BUILD_ROLE_PANEL_REGEX.findAll(html).toList()
+        if (panels.isEmpty()) return parseBuildPanel(html, sourceUrl, role = null)
+
+        return panels.flatMapIndexed { index, panel ->
+            val end = panels.getOrNull(index + 1)?.range?.first ?: html.length
+            val block = html.substring(panel.range.first, end)
+            val titleRole = BUILD_ROLE_TITLE_REGEX.find(block)?.groupValues?.getOrNull(1)
+            val role = roleLabels.getOrNull(index)
+                ?: titleRole?.let(::roleLabel)
+            parseBuildPanel(block, sourceUrl, role)
+        }
+    }
+
+    private fun parseBuildPanel(
+        html: String,
+        sourceUrl: String,
+        role: String?,
+    ): List<ChampionVisualCard> =
         BUILD_VARIANT_REGEX.findAll(html).mapNotNull variant@{ match ->
             val block = match.groupValues[1]
             val title = textFrom(block, BUILD_TITLE_REGEX) ?: return@variant null
@@ -249,9 +294,25 @@ object ChampionSectionRepository {
                 title = title,
                 detail = textFrom(block, BUILD_DESCRIPTION_REGEX),
                 category = "Build",
+                role = role,
                 items = items,
             )
         }.toList()
+
+    private fun roleLabel(rawRole: String): String {
+        val role = rawRole.trim()
+        return when {
+            role.contains("support", ignoreCase = true) -> "Support"
+            role.contains("jungle", ignoreCase = true) -> "Jungle"
+            role.contains("mid", ignoreCase = true) -> "Mid"
+            role.contains("top", ignoreCase = true) ||
+                role.contains("baron", ignoreCase = true) -> "Top"
+            role.contains("dragon", ignoreCase = true) ||
+                role.contains("duo", ignoreCase = true) ||
+                role.contains("adc", ignoreCase = true) -> "Dragon Lane"
+            else -> role
+        }
+    }
 
     private fun imageUrl(html: String, baseUrl: String): String? {
         val path = IMAGE_SRC_REGEX.find(html)?.groupValues?.getOrNull(1) ?: return null
@@ -293,6 +354,14 @@ object ChampionSectionRepository {
     private const val LOG_TAG = "ChampionSectionRepository"
     private val BEST_PICKS_REGEX = Regex(
         """<ol\b[^>]*class="nx-md__best"[^>]*>([\s\S]*?)</ol\s*>""",
+        RegexOption.IGNORE_CASE,
+    )
+    private val ROLE_COUNTER_PANEL_REGEX = Regex(
+        """<div\b(?=[^>]*class="[^"]*\bnx-role-panel\b[^"]*")(?=[^>]*data-role="([^"]+)")[^>]*>""",
+        RegexOption.IGNORE_CASE,
+    )
+    private val ACTIVE_COUNTER_ROLE_REGEX = Regex(
+        """<button\b(?=[^>]*class="[^"]*\bnx-role-tab--active\b[^"]*")(?=[^>]*data-role="([^"]+)")[^>]*>""",
         RegexOption.IGNORE_CASE,
     )
     private val BEST_PICK_REGEX = Regex("""<li\b[^>]*>([\s\S]*?)</li\s*>""", RegexOption.IGNORE_CASE)
@@ -350,7 +419,23 @@ object ChampionSectionRepository {
         """<article\b[^>]*class="engine-builds__variant"[^>]*>([\s\S]*?)</article\s*>""",
         RegexOption.IGNORE_CASE,
     )
-    private val BUILD_TITLE_REGEX = Regex("""<h3\b[^>]*>([\s\S]*?)</h3\s*>""", RegexOption.IGNORE_CASE)
+    private val BUILD_ROLE_NAV_REGEX = Regex(
+        """<div\b[^>]*class="eb-roles__nav"[^>]*>([\s\S]*?)</div\s*>""",
+        RegexOption.IGNORE_CASE,
+    )
+    private val BUILD_ROLE_LABEL_REGEX = Regex(
+        """<label\b[^>]*>([\s\S]*?)</label\s*>""",
+        RegexOption.IGNORE_CASE,
+    )
+    private val BUILD_ROLE_PANEL_REGEX = Regex(
+        """<div\b[^>]*class="eb-rolepanel"[^>]*>""",
+        RegexOption.IGNORE_CASE,
+    )
+    private val BUILD_ROLE_TITLE_REGEX = Regex(
+        """<h[34]\b[^>]*class="eb-role-title"[^>]*>[\s\S]*?\s((?:Mid(?: Lane)?|Support|Jungle|Top|Baron Lane|Dragon Lane|Duo Lane))\s*—""",
+        RegexOption.IGNORE_CASE,
+    )
+    private val BUILD_TITLE_REGEX = Regex("""<h[34]\b[^>]*>([\s\S]*?)</h[34]\s*>""", RegexOption.IGNORE_CASE)
     private val BUILD_DESCRIPTION_REGEX = Regex(
         """<p\b[^>]*class="eb-variant-desc"[^>]*>([\s\S]*?)</p\s*>""",
         RegexOption.IGNORE_CASE,
@@ -464,6 +549,7 @@ private class ChampionSectionDatabase(context: Context) :
                 put("iconUrl", card.iconUrl)
                 put("rank", card.rank)
                 put("category", card.category)
+                put("role", card.role)
                 put("items", JSONArray().apply {
                     card.items.forEach { item ->
                         put(JSONObject().apply {
@@ -488,6 +574,7 @@ private class ChampionSectionDatabase(context: Context) :
                 iconUrl = item.optString("iconUrl").takeIf { it.isNotBlankOrNull() },
                 rank = item.optString("rank").takeIf { it.isNotBlankOrNull() },
                 category = item.optString("category").takeIf { it.isNotBlankOrNull() },
+                role = item.optString("role").takeIf { it.isNotBlankOrNull() },
                 items = (0 until items.length()).map { itemIndex ->
                     val visualItem = items.getJSONObject(itemIndex)
                     ChampionVisualItem(

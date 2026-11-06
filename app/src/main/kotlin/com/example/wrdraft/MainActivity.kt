@@ -33,6 +33,7 @@ import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
@@ -376,6 +377,7 @@ private fun InAppSourcePage(page: InAppPage, onBack: () -> Unit) {
     var state by remember(page) {
         mutableStateOf(ChampionSectionState(null, isRefreshing = false, error = false))
     }
+    var selectedRole by remember(page) { mutableStateOf<String?>(null) }
     var refreshRequest by remember(page) { mutableStateOf(0) }
     DisposableEffect(page, refreshRequest) {
         var active = true
@@ -421,14 +423,36 @@ private fun InAppSourcePage(page: InAppPage, onBack: () -> Unit) {
                 style = MaterialTheme.typography.bodyMedium,
             )
         } else if (content != null) {
+            val roles = content.cards.mapNotNull { it.role }.distinct()
+            val activeRole = selectedRole?.takeIf { it in roles } ?: roles.firstOrNull()
             Box(Modifier.weight(1f).fillMaxWidth()) {
                 if (content.cards.isNotEmpty()) {
-                    Column(
-                        modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
-                        verticalArrangement = Arrangement.spacedBy(10.dp),
-                    ) {
-                        content.cards.forEach { card ->
-                            ChampionVisualCardView(card)
+                    Column(modifier = Modifier.fillMaxSize()) {
+                        if (roles.size > 1) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth()
+                                    .horizontalScroll(rememberScrollState()),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            ) {
+                                roles.forEach { role ->
+                                    if (role == activeRole) {
+                                        Button(onClick = {}) { Text(role) }
+                                    } else {
+                                        OutlinedButton(onClick = { selectedRole = role }) {
+                                            Text(role)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        Column(
+                            modifier = Modifier.weight(1f).fillMaxWidth()
+                                .verticalScroll(rememberScrollState()),
+                            verticalArrangement = Arrangement.spacedBy(10.dp),
+                        ) {
+                            content.cards
+                                .filter { activeRole == null || it.role == activeRole }
+                                .forEach { card -> ChampionVisualCardView(card) }
                         }
                     }
                 } else {
@@ -456,8 +480,12 @@ private fun ChampionVisualCardView(card: ChampionVisualCard) {
             modifier = Modifier.padding(12.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            card.category?.let {
-                Text(it, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+            listOfNotNull(card.role, card.category).takeIf { it.isNotEmpty() }?.let {
+                Text(
+                    it.joinToString(" · "),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.primary,
+                )
             }
             if (card.items.isNotEmpty()) {
                 Text(card.title, style = MaterialTheme.typography.titleMedium)
