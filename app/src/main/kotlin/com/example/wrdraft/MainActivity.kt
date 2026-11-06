@@ -21,6 +21,8 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
@@ -32,6 +34,10 @@ import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.darkColorScheme
+import androidx.compose.material3.lightColorScheme
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
@@ -48,6 +54,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -60,6 +67,8 @@ import com.example.wrdraft.data.ChampionSection
 import com.example.wrdraft.data.ChampionSectionContent
 import com.example.wrdraft.data.ChampionSectionRepository
 import com.example.wrdraft.data.ChampionSectionState
+import com.example.wrdraft.data.ChampionVisualCard
+import com.example.wrdraft.data.ChampionVisualItem
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -77,9 +86,22 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         setContent {
-            MaterialTheme {
+            val preferences = getSharedPreferences(PREFERENCES_NAME, MODE_PRIVATE)
+            var darkTheme by remember {
+                mutableStateOf(preferences.getBoolean(DARK_THEME_KEY, false))
+            }
+            MaterialTheme(
+                colorScheme = if (darkTheme) darkColorScheme() else lightColorScheme(),
+            ) {
                 Surface(Modifier.fillMaxSize().safeDrawingPadding()) {
-                    DraftScreen(onStartOverlay = ::requestOverlay)
+                    DraftScreen(
+                        onStartOverlay = ::requestOverlay,
+                        darkTheme = darkTheme,
+                        onToggleTheme = {
+                            darkTheme = !darkTheme
+                            preferences.edit().putBoolean(DARK_THEME_KEY, darkTheme).apply()
+                        },
+                    )
                 }
             }
         }
@@ -129,10 +151,19 @@ class MainActivity : ComponentActivity() {
             startService(intent)
         }
     }
+
+    private companion object {
+        const val PREFERENCES_NAME = "draft_assistant_preferences"
+        const val DARK_THEME_KEY = "dark_theme"
+    }
 }
 
 @Composable
-fun DraftScreen(onStartOverlay: () -> Unit) {
+fun DraftScreen(
+    onStartOverlay: () -> Unit,
+    darkTheme: Boolean,
+    onToggleTheme: () -> Unit,
+) {
     val context = LocalContext.current
     var selected by remember { mutableStateOf<Champion?>(null) }
     var selectedWinRate by remember { mutableStateOf<ChampionWinRate?>(null) }
@@ -178,27 +209,66 @@ fun DraftScreen(onStartOverlay: () -> Unit) {
         modifier = Modifier.fillMaxSize().padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        Text("Draft Assistant", style = MaterialTheme.typography.headlineSmall)
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                "Draft Assistant",
+                style = MaterialTheme.typography.headlineSmall,
+                modifier = Modifier.weight(1f),
+            )
+            IconButton(
+                onClick = {
+                    val champion = selected ?: return@IconButton
+                    offlinePreparing = true
+                    offlineStatus = "Descargando counterpicks, sinergias y builds..."
+                    ChampionSectionRepository.loadAll(context, champion) { states ->
+                        if (selected == champion) {
+                            val sectionCount = ChampionSection.values().size
+                            val complete = states.size == sectionCount &&
+                                states.values.none { it.isRefreshing }
+                            if (complete) {
+                                offlinePreparing = false
+                                val saved = states.values.count { it.content != null }
+                                offlineStatus = if (saved == sectionCount) {
+                                    "Datos guardados para uso offline."
+                                } else {
+                                    "$saved de $sectionCount secciones guardadas; reintenta con conexión."
+                                }
+                            }
+                        }
+                    }
+                },
+                enabled = selected != null && !offlinePreparing,
+            ) {
+                if (offlinePreparing) {
+                    CircularProgressIndicator(modifier = Modifier.size(22.dp), strokeWidth = 2.dp)
+                } else {
+                    Icon(
+                        painter = painterResource(R.drawable.ic_download),
+                        contentDescription = "Preparar datos offline",
+                    )
+                }
+            }
+            IconButton(onClick = onToggleTheme) {
+                Icon(
+                    painter = painterResource(
+                        if (darkTheme) R.drawable.ic_light_mode else R.drawable.ic_dark_mode,
+                    ),
+                    contentDescription = if (darkTheme) "Activar tema claro" else "Activar tema oscuro",
+                )
+            }
+        }
+        if (offlineStatus.isNotEmpty()) {
+            Text(offlineStatus, style = MaterialTheme.typography.bodySmall)
+        }
         OutlinedButton(
             onClick = onStartOverlay,
             modifier = Modifier.fillMaxWidth(),
         ) {
             Text("Activar burbuja sobre el juego")
         }
-        Text(
-            "La primera vez, Android pedirá permiso para mostrarla sobre otras apps.",
-            style = MaterialTheme.typography.bodySmall,
-        )
-        TextButton(
-            onClick = { openUrl(context, ChampionData.ROSTER_SOURCE_URL) },
-            modifier = Modifier.fillMaxWidth(),
-        ) {
-            Text(
-                "${ChampionData.champions.size} campeones · fuente: Riot Games " +
-                    "(${ChampionData.ROSTER_SNAPSHOT_DATE})",
-            )
-        }
-
         OutlinedTextField(
             value = query,
             onValueChange = { query = it },
@@ -214,40 +284,6 @@ fun DraftScreen(onStartOverlay: () -> Unit) {
                     winRate = selectedWinRate,
                     isLoading = winRateLoading,
                     unavailable = winRateFailed,
-                )
-                OutlinedButton(
-                    onClick = {
-                        offlinePreparing = true
-                        offlineStatus = "Descargando las cuatro secciones..."
-                        ChampionSectionRepository.loadAll(context, champion) { states ->
-                            if (selected == champion) {
-                                val sectionCount = ChampionSection.values().size
-                                val complete = states.size == sectionCount &&
-                                    states.values.none { it.isRefreshing }
-                                if (complete) {
-                                    offlinePreparing = false
-                                    val saved = states.values.count { it.content != null }
-                                    offlineStatus = if (saved == sectionCount) {
-                                        "Las cuatro secciones están guardadas para uso offline."
-                                    } else {
-                                        "$saved de $sectionCount secciones guardadas; " +
-                                            "reintenta cuando haya conexión."
-                                    }
-                                }
-                            }
-                        }
-                    },
-                    modifier = Modifier.fillMaxWidth(),
-                    enabled = !offlinePreparing,
-                ) {
-                    Text(if (offlinePreparing) "Preparando copia offline..." else "Preparar para offline")
-                }
-                if (offlineStatus.isNotEmpty()) {
-                    Text(offlineStatus, style = MaterialTheme.typography.bodySmall)
-                }
-                Text(
-                    "Datos de WildRiftCore y WildRiftFire. Se muestran como texto nativo y se guardan en este dispositivo al descargarlos.",
-                    style = MaterialTheme.typography.bodySmall,
                 )
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -276,32 +312,16 @@ fun DraftScreen(onStartOverlay: () -> Unit) {
                         Text("Sinergias", maxLines = 1, overflow = TextOverflow.Ellipsis)
                     }
                 }
-                Row(
+                OutlinedButton(
+                    onClick = {
+                        inAppPage = InAppPage(
+                            champion = champion,
+                            section = ChampionSection.BUILD,
+                        )
+                    },
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    OutlinedButton(
-                        onClick = {
-                            inAppPage = InAppPage(
-                                champion = champion,
-                                section = ChampionSection.BUILD,
-                            )
-                        },
-                        modifier = Modifier.weight(1f),
-                    ) {
-                        Text("Build")
-                    }
-                    OutlinedButton(
-                        onClick = {
-                            inAppPage = InAppPage(
-                                champion = champion,
-                                section = ChampionSection.GUIDE,
-                            )
-                        },
-                        modifier = Modifier.weight(1f),
-                    ) {
-                        Text("Guía")
-                    }
+                    Text("Build")
                 }
             }
         }
@@ -402,15 +422,129 @@ private fun InAppSourcePage(page: InAppPage, onBack: () -> Unit) {
             )
         } else if (content != null) {
             Box(Modifier.weight(1f).fillMaxWidth()) {
-                SelectionContainer {
-                    Text(
-                        content.text,
-                        modifier = Modifier.fillMaxWidth().verticalScroll(rememberScrollState()),
-                        style = MaterialTheme.typography.bodyMedium,
-                    )
+                if (content.cards.isNotEmpty()) {
+                    Column(
+                        modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
+                        verticalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        content.cards.forEach { card ->
+                            ChampionVisualCardView(card)
+                        }
+                    }
+                } else {
+                    SelectionContainer {
+                        Text(
+                            content.text,
+                            modifier = Modifier.fillMaxWidth().verticalScroll(rememberScrollState()),
+                            style = MaterialTheme.typography.bodyMedium,
+                        )
+                    }
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun ChampionVisualCardView(card: ChampionVisualCard) {
+    Surface(
+        shape = RoundedCornerShape(14.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant,
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(
+            modifier = Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            card.category?.let {
+                Text(it, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+            }
+            if (card.items.isNotEmpty()) {
+                Text(card.title, style = MaterialTheme.typography.titleMedium)
+                card.detail?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+                Row(
+                    modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                    verticalAlignment = Alignment.Top,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    card.items.forEachIndexed { index, item ->
+                        VisualItemView(item)
+                        if (index < card.items.lastIndex) {
+                            Text("›", modifier = Modifier.padding(top = 14.dp), style = MaterialTheme.typography.titleLarge)
+                        }
+                    }
+                }
+            } else {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    card.iconUrl?.let { url ->
+                        VisualIcon(url, card.title, Modifier.size(60.dp))
+                    }
+                    Column(modifier = Modifier.weight(1f)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(card.title, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+                            card.rank?.let {
+                                Surface(shape = CircleShape, color = MaterialTheme.colorScheme.primaryContainer) {
+                                    Text(
+                                        it,
+                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                                        style = MaterialTheme.typography.labelLarge,
+                                    )
+                                }
+                            }
+                        }
+                        card.subtitle?.let { Text(it, style = MaterialTheme.typography.labelMedium) }
+                        card.detail?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun VisualItemView(item: ChampionVisualItem) {
+    Column(
+        modifier = Modifier.width(68.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        item.iconUrl?.let { VisualIcon(it, item.name, Modifier.size(52.dp)) }
+            ?: Box(
+                modifier = Modifier.size(52.dp).clip(RoundedCornerShape(10.dp))
+                    .background(MaterialTheme.colorScheme.primaryContainer),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(item.name.take(1), style = MaterialTheme.typography.titleMedium)
+            }
+        Text(
+            item.name,
+            style = MaterialTheme.typography.labelSmall,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+        )
+    }
+}
+
+@Composable
+private fun VisualIcon(url: String, description: String, modifier: Modifier = Modifier) {
+    Box(
+        modifier = modifier.clip(RoundedCornerShape(10.dp)).background(MaterialTheme.colorScheme.primaryContainer),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            description.take(1),
+            style = MaterialTheme.typography.titleMedium,
+            color = MaterialTheme.colorScheme.onPrimaryContainer,
+        )
+        AndroidView(
+            factory = { ImageView(it) },
+            update = { ChampionIconLoader.loadUrl(url, description, it) },
+            modifier = Modifier.fillMaxSize().clip(RoundedCornerShape(10.dp)),
+        )
     }
 }
 
@@ -433,17 +567,13 @@ private fun sectionStatus(
 }
 
 private fun ChampionSection.sourceLabel(): String =
-    if (this == ChampionSection.GUIDE) "WildRiftFire" else "WildRiftCore"
+    "WildRiftCore"
 
 private fun ChampionSectionContent.patchLabel(): String =
     patch?.let { "Parche $it" } ?: "parche no indicado por la fuente"
 
 private fun ChampionSectionContent.fetchedAtLabel(): String =
     "descargado ${SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).format(Date(fetchedAt))}"
-
-private fun openUrl(context: android.content.Context, url: String) {
-    context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
-}
 
 @Composable
 fun ChampionTile(champion: Champion, selected: Boolean, onClick: () -> Unit) {

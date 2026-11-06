@@ -9,6 +9,8 @@ import android.os.Handler
 import android.os.Looper
 import android.text.Html
 import android.util.Log
+import org.json.JSONArray
+import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
 import java.util.concurrent.Executors
@@ -17,7 +19,6 @@ enum class ChampionSection(val id: String, val label: String) {
     COUNTERS("counters", "Counterpicks"),
     SYNERGIES("synergies", "Sinergias"),
     BUILD("build", "Build"),
-    GUIDE("guide", "Guía"),
 }
 
 data class ChampionSectionContent(
@@ -25,6 +26,22 @@ data class ChampionSectionContent(
     val patch: String?,
     val sourceUrl: String,
     val fetchedAt: Long,
+    val cards: List<ChampionVisualCard> = emptyList(),
+)
+
+data class ChampionVisualCard(
+    val title: String,
+    val subtitle: String? = null,
+    val detail: String? = null,
+    val iconUrl: String? = null,
+    val rank: String? = null,
+    val category: String? = null,
+    val items: List<ChampionVisualItem> = emptyList(),
+)
+
+data class ChampionVisualItem(
+    val name: String,
+    val iconUrl: String? = null,
 )
 
 data class ChampionSectionState(
@@ -52,7 +69,7 @@ object ChampionSectionRepository {
                 post(callback, ChampionSectionState(cached, isRefreshing = true, error = false))
                 val url = sourceUrl(champion, section)
                 val html = download(url)
-                val content = parse(html, url)
+                val content = parse(html, url, section)
                 database.write(champion.slug, section, content)
                 cached = content
                 post(callback, ChampionSectionState(content, isRefreshing = false, error = false))
@@ -88,7 +105,6 @@ object ChampionSectionRepository {
             ChampionSection.COUNTERS -> ChampionLinks.wildRiftCoreCountersUrl(champion.slug)
             ChampionSection.SYNERGIES -> ChampionLinks.wildRiftCoreSynergiesUrl(champion.slug)
             ChampionSection.BUILD -> ChampionLinks.wildRiftCoreBuildUrl(champion.slug)
-            ChampionSection.GUIDE -> ChampionLinks.wildRiftFireUrl(champion.slug)
         }
 
     private fun download(url: String): String {
@@ -103,7 +119,11 @@ object ChampionSectionRepository {
         }
     }
 
-    private fun parse(html: String, sourceUrl: String): ChampionSectionContent {
+    private fun parse(
+        html: String,
+        sourceUrl: String,
+        section: ChampionSection,
+    ): ChampionSectionContent {
         val main = MAIN_REGEX.find(html)?.groupValues?.getOrNull(1)
             ?: BODY_REGEX.find(html)?.groupValues?.getOrNull(1)
             ?: throw IllegalStateException("Source page did not contain readable content")
@@ -134,7 +154,132 @@ object ChampionSectionRepository {
             patch = PATCH_REGEX.find(html)?.groupValues?.getOrNull(1),
             sourceUrl = sourceUrl,
             fetchedAt = System.currentTimeMillis(),
+            cards = parseCards(main, section, sourceUrl),
         )
+    }
+
+    private fun parseCards(
+        html: String,
+        section: ChampionSection,
+        sourceUrl: String,
+    ): List<ChampionVisualCard> = when (section) {
+        ChampionSection.COUNTERS -> parseCounterCards(html, sourceUrl)
+        ChampionSection.SYNERGIES -> parseSynergyCards(html, sourceUrl)
+        ChampionSection.BUILD -> parseBuildCards(html, sourceUrl)
+    }
+
+    private fun parseCounterCards(html: String, sourceUrl: String): List<ChampionVisualCard> {
+        val cards = mutableListOf<ChampionVisualCard>()
+        val bestPicks = BEST_PICKS_REGEX.find(html)?.groupValues?.getOrNull(1)
+        bestPicks?.let { list ->
+            BEST_PICK_REGEX.findAll(list).forEach { match ->
+                val entry = match.groupValues[1]
+                val name = textFrom(entry, BEST_PICK_NAME_REGEX) ?: return@forEach
+                cards += ChampionVisualCard(
+                    title = name,
+                    iconUrl = imageUrl(entry, sourceUrl),
+                    rank = textFrom(entry, RANK_REGEX),
+                    category = "Mejores elecciones",
+                    detail = textFrom(entry, EDGE_REGEX)?.let { "Ventaja $it" },
+                )
+            }
+        }
+
+        val avoidSection = AVOID_SECTION_REGEX.find(html)?.groupValues?.getOrNull(1)
+        avoidSection?.let { block ->
+            AVOID_LINE_REGEX.findAll(block).forEach { match ->
+                val entry = match.groupValues[1]
+                val name = textFrom(entry, BOLD_TEXT_REGEX) ?: return@forEach
+                cards += ChampionVisualCard(
+                    title = name,
+                    iconUrl = imageUrl(entry, sourceUrl),
+                    rank = textFrom(entry, EDGE_REGEX),
+                    category = "Evitar contra este campeón",
+                )
+            }
+        }
+
+        val keyItemSection = KEY_ITEM_SECTION_REGEX.find(html)?.groupValues?.getOrNull(1)
+        keyItemSection?.let { block ->
+            val name = textFrom(block, BOLD_TEXT_REGEX)
+            if (name != null) {
+                cards += ChampionVisualCard(
+                    title = name,
+                    subtitle = textFrom(block, SMALL_TEXT_REGEX),
+                    iconUrl = imageUrl(block, sourceUrl),
+                    category = "Objeto clave",
+                )
+            }
+        }
+        return cards
+    }
+
+    private fun parseSynergyCards(html: String, sourceUrl: String): List<ChampionVisualCard> {
+        val cards = mutableListOf<ChampionVisualCard>()
+        SYNERGY_TIER_REGEX.findAll(html).forEach { tierMatch ->
+            val block = tierMatch.groupValues[1]
+            val tier = textFrom(block, TIER_TITLE_REGEX) ?: "Sinergia"
+            val starts = SYNERGY_CARD_START_REGEX.findAll(block).map { it.range.first }.toList()
+            starts.forEachIndexed { index, start ->
+                val end = starts.getOrNull(index + 1) ?: block.length
+                val entry = block.substring(start, end)
+                val name = textFrom(entry, SYNERGY_NAME_REGEX) ?: return@forEachIndexed
+                cards += ChampionVisualCard(
+                    title = name,
+                    subtitle = textFrom(entry, SYNERGY_ROLE_REGEX),
+                    detail = textFrom(entry, SYNERGY_DETAIL_REGEX),
+                    iconUrl = imageUrl(entry, sourceUrl),
+                    category = tier.replace('_', ' ').uppercase(),
+                )
+            }
+        }
+        return cards
+    }
+
+    private fun parseBuildCards(html: String, sourceUrl: String): List<ChampionVisualCard> =
+        BUILD_VARIANT_REGEX.findAll(html).mapNotNull variant@{ match ->
+            val block = match.groupValues[1]
+            val title = textFrom(block, BUILD_TITLE_REGEX) ?: return@variant null
+            val items = BUILD_ITEM_REGEX.findAll(block).mapNotNull item@{ itemMatch ->
+                val itemBlock = itemMatch.groupValues[1]
+                val itemName = textFrom(itemBlock, BUILD_ITEM_NAME_REGEX) ?: return@item null
+                ChampionVisualItem(itemName, imageUrl(itemBlock, sourceUrl))
+            }.toList()
+            ChampionVisualCard(
+                title = title,
+                detail = textFrom(block, BUILD_DESCRIPTION_REGEX),
+                category = "Build",
+                items = items,
+            )
+        }.toList()
+
+    private fun imageUrl(html: String, baseUrl: String): String? {
+        val path = IMAGE_SRC_REGEX.find(html)?.groupValues?.getOrNull(1) ?: return null
+        return try {
+            val resolved = URL(URL(baseUrl), path)
+            if (resolved.protocol == "https" &&
+                (resolved.host == "wildriftcore.com" || resolved.host == "www.wildriftfire.com")
+            ) {
+                resolved.toString()
+            } else {
+                null
+            }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun textFrom(html: String, regex: Regex): String? =
+        regex.find(html)?.groupValues?.getOrNull(1)?.let(::plainText)?.takeIf { it.isNotBlank() }
+
+    private fun plainText(value: String): String {
+        val decoded = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            Html.fromHtml(value, Html.FROM_HTML_MODE_COMPACT)
+        } else {
+            @Suppress("DEPRECATION")
+            Html.fromHtml(value)
+        }
+        return decoded.toString().replace(WHITESPACE_REGEX, " ").trim()
     }
 
     private fun post(
@@ -146,6 +291,79 @@ object ChampionSectionRepository {
 
     private const val MAX_CONTENT_LENGTH = 150_000
     private const val LOG_TAG = "ChampionSectionRepository"
+    private val BEST_PICKS_REGEX = Regex(
+        """<ol\b[^>]*class="nx-md__best"[^>]*>([\s\S]*?)</ol\s*>""",
+        RegexOption.IGNORE_CASE,
+    )
+    private val BEST_PICK_REGEX = Regex("""<li\b[^>]*>([\s\S]*?)</li\s*>""", RegexOption.IGNORE_CASE)
+    private val BEST_PICK_NAME_REGEX = Regex(
+        """<span\b[^>]*class="nx-md__bname"[^>]*>([\s\S]*?)</span\s*>""",
+        RegexOption.IGNORE_CASE,
+    )
+    private val RANK_REGEX = Regex(
+        """<span\b[^>]*class="nx-md__brank"[^>]*>([\s\S]*?)</span\s*>""",
+        RegexOption.IGNORE_CASE,
+    )
+    private val EDGE_REGEX = Regex(
+        """<span\b[^>]*class="nx-md__[bl]edge"[^>]*>([\s\S]*?)</span\s*>""",
+        RegexOption.IGNORE_CASE,
+    )
+    private val AVOID_SECTION_REGEX = Regex(
+        """<section\b(?=[^>]*data-kind="avoid")[^>]*>([\s\S]*?)</section\s*>""",
+        RegexOption.IGNORE_CASE,
+    )
+    private val AVOID_LINE_REGEX = Regex(
+        """<div\b[^>]*class="nx-md__line"[^>]*>([\s\S]*?)</div\s*>""",
+        RegexOption.IGNORE_CASE,
+    )
+    private val KEY_ITEM_SECTION_REGEX = Regex(
+        """<section\b(?=[^>]*data-kind="item")[^>]*>([\s\S]*?)</section\s*>""",
+        RegexOption.IGNORE_CASE,
+    )
+    private val BOLD_TEXT_REGEX = Regex("""<b\b[^>]*>([\s\S]*?)</b\s*>""", RegexOption.IGNORE_CASE)
+    private val SMALL_TEXT_REGEX = Regex("""<small\b[^>]*>([\s\S]*?)</small\s*>""", RegexOption.IGNORE_CASE)
+    private val SYNERGY_TIER_REGEX = Regex(
+        """<details\b[^>]*class="syn-tier-block"[^>]*>([\s\S]*?)</details\s*>""",
+        RegexOption.IGNORE_CASE,
+    )
+    private val TIER_TITLE_REGEX = Regex(
+        """<summary\b[^>]*>[\s\S]*?<span>([\s\S]*?)</span>""",
+        RegexOption.IGNORE_CASE,
+    )
+    private val SYNERGY_CARD_START_REGEX = Regex(
+        """<div\b[^>]*class="nx-counter-item"[^>]*>""",
+        RegexOption.IGNORE_CASE,
+    )
+    private val SYNERGY_NAME_REGEX = Regex(
+        """<a\b[^>]*class="nx-counter-name"[^>]*>([\s\S]*?)</a\s*>""",
+        RegexOption.IGNORE_CASE,
+    )
+    private val SYNERGY_DETAIL_REGEX = Regex(
+        """<span\b[^>]*class="nx-counter-comment"[^>]*>([\s\S]*?)</span\s*>""",
+        RegexOption.IGNORE_CASE,
+    )
+    private val SYNERGY_ROLE_REGEX = Regex(
+        """<span\b[^>]*class="nx-syn-role-badge"[^>]*>([\s\S]*?)</span\s*>""",
+        RegexOption.IGNORE_CASE,
+    )
+    private val BUILD_VARIANT_REGEX = Regex(
+        """<article\b[^>]*class="engine-builds__variant"[^>]*>([\s\S]*?)</article\s*>""",
+        RegexOption.IGNORE_CASE,
+    )
+    private val BUILD_TITLE_REGEX = Regex("""<h3\b[^>]*>([\s\S]*?)</h3\s*>""", RegexOption.IGNORE_CASE)
+    private val BUILD_DESCRIPTION_REGEX = Regex(
+        """<p\b[^>]*class="eb-variant-desc"[^>]*>([\s\S]*?)</p\s*>""",
+        RegexOption.IGNORE_CASE,
+    )
+    private val BUILD_ITEM_REGEX = Regex(
+        """<a\b[^>]*class="eb-item"[^>]*>([\s\S]*?)</a\s*>""",
+        RegexOption.IGNORE_CASE,
+    )
+    private val BUILD_ITEM_NAME_REGEX = Regex(
+        """<span\b[^>]*>([\s\S]*?)</span\s*>""",
+        RegexOption.IGNORE_CASE,
+    )
+    private val IMAGE_SRC_REGEX = Regex("""<img\b[^>]*src="([^"]+)"[^>]*>""", RegexOption.IGNORE_CASE)
     private val MAIN_REGEX = Regex("""<main\b[^>]*>([\s\S]*?)</main\s*>""", RegexOption.IGNORE_CASE)
     private val BODY_REGEX = Regex("""<body\b[^>]*>([\s\S]*?)</body\s*>""", RegexOption.IGNORE_CASE)
     private val COMMENT_REGEX = Regex("""<!--[\s\S]*?-->""")
@@ -175,6 +393,7 @@ private class ChampionSectionDatabase(context: Context) :
                 champion_slug TEXT NOT NULL,
                 section_id TEXT NOT NULL,
                 content TEXT NOT NULL,
+                visual_json TEXT NOT NULL DEFAULT '[]',
                 patch TEXT,
                 source_url TEXT NOT NULL,
                 fetched_at INTEGER NOT NULL,
@@ -184,12 +403,16 @@ private class ChampionSectionDatabase(context: Context) :
         )
     }
 
-    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) = Unit
+    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
+        if (oldVersion < 2) {
+            db.execSQL("ALTER TABLE $TABLE_NAME ADD COLUMN visual_json TEXT NOT NULL DEFAULT '[]'")
+        }
+    }
 
     fun read(championSlug: String, section: ChampionSection): ChampionSectionContent? =
         readableDatabase.query(
             TABLE_NAME,
-            arrayOf("content", "patch", "source_url", "fetched_at"),
+            arrayOf("content", "visual_json", "patch", "source_url", "fetched_at"),
             "champion_slug = ? AND section_id = ?",
             arrayOf(championSlug, section.id),
             null,
@@ -201,9 +424,10 @@ private class ChampionSectionDatabase(context: Context) :
             } else {
                 ChampionSectionContent(
                     text = cursor.getString(0),
-                    patch = if (cursor.isNull(1)) null else cursor.getString(1),
-                    sourceUrl = cursor.getString(2),
-                    fetchedAt = cursor.getLong(3),
+                    cards = decodeCards(cursor.getString(1)),
+                    patch = if (cursor.isNull(2)) null else cursor.getString(2),
+                    sourceUrl = cursor.getString(3),
+                    fetchedAt = cursor.getLong(4),
                 )
             }
         }
@@ -217,6 +441,7 @@ private class ChampionSectionDatabase(context: Context) :
             put("champion_slug", championSlug)
             put("section_id", section.id)
             put("content", content.text)
+            put("visual_json", encodeCards(content.cards))
             put("patch", content.patch)
             put("source_url", content.sourceUrl)
             put("fetched_at", content.fetchedAt)
@@ -230,9 +455,55 @@ private class ChampionSectionDatabase(context: Context) :
         check(rowId >= 0) { "Could not save champion section offline" }
     }
 
+    private fun encodeCards(cards: List<ChampionVisualCard>): String = JSONArray().apply {
+        cards.forEach { card ->
+            put(JSONObject().apply {
+                put("title", card.title)
+                put("subtitle", card.subtitle)
+                put("detail", card.detail)
+                put("iconUrl", card.iconUrl)
+                put("rank", card.rank)
+                put("category", card.category)
+                put("items", JSONArray().apply {
+                    card.items.forEach { item ->
+                        put(JSONObject().apply {
+                            put("name", item.name)
+                            put("iconUrl", item.iconUrl)
+                        })
+                    }
+                })
+            })
+        }
+    }.toString()
+
+    private fun decodeCards(json: String): List<ChampionVisualCard> = runCatching {
+        val array = JSONArray(json)
+        (0 until array.length()).map { index ->
+            val item = array.getJSONObject(index)
+            val items = item.optJSONArray("items") ?: JSONArray()
+            ChampionVisualCard(
+                title = item.getString("title"),
+                subtitle = item.optString("subtitle").takeIf { it.isNotBlankOrNull() },
+                detail = item.optString("detail").takeIf { it.isNotBlankOrNull() },
+                iconUrl = item.optString("iconUrl").takeIf { it.isNotBlankOrNull() },
+                rank = item.optString("rank").takeIf { it.isNotBlankOrNull() },
+                category = item.optString("category").takeIf { it.isNotBlankOrNull() },
+                items = (0 until items.length()).map { itemIndex ->
+                    val visualItem = items.getJSONObject(itemIndex)
+                    ChampionVisualItem(
+                        name = visualItem.getString("name"),
+                        iconUrl = visualItem.optString("iconUrl").takeIf { it.isNotBlankOrNull() },
+                    )
+                },
+            )
+        }
+    }.getOrDefault(emptyList())
+
+    private fun String.isNotBlankOrNull(): Boolean = isNotBlank() && this != "null"
+
     private companion object {
         const val DATABASE_NAME = "champion_sections.db"
-        const val DATABASE_VERSION = 1
+        const val DATABASE_VERSION = 2
         const val TABLE_NAME = "champion_sections"
     }
 }

@@ -22,6 +22,7 @@ import android.view.WindowManager
 import android.view.inputmethod.InputMethodManager
 import android.widget.EditText
 import android.widget.FrameLayout
+import android.widget.HorizontalScrollView
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ScrollView
@@ -34,6 +35,8 @@ import com.example.wrdraft.data.ChampionSection
 import com.example.wrdraft.data.ChampionSectionContent
 import com.example.wrdraft.data.ChampionSectionRepository
 import com.example.wrdraft.data.ChampionSectionState
+import com.example.wrdraft.data.ChampionVisualCard
+import com.example.wrdraft.data.ChampionVisualItem
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -125,6 +128,8 @@ class DraftOverlayService : Service() {
             setTextColor(Color.WHITE)
         }
         header.addView(title, LinearLayout.LayoutParams(0, dp(44), 1f))
+        title.contentDescription = "Arrastra para mover la ventana"
+        title.setOnTouchListener(dragListener(root, params) {})
         val minimize = textButton("—") {
             (getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager)
                 .hideSoftInputFromWindow(root.windowToken, 0)
@@ -173,7 +178,7 @@ class DraftOverlayService : Service() {
         }
         val offlineButton = textButton("Offline") {
             val champion = currentChampion ?: return@textButton
-            offlineLabel.text = "Descargando las cuatro secciones..."
+            offlineLabel.text = "Descargando counters, sinergias y builds..."
             ChampionSectionRepository.loadAll(this@DraftOverlayService, champion) { states ->
                 if (currentChampion == champion) {
                     val sectionCount = ChampionSection.values().size
@@ -182,7 +187,7 @@ class DraftOverlayService : Service() {
                     if (complete) {
                         val saved = states.values.count { it.content != null }
                         offlineLabel.text = if (saved == sectionCount) {
-                            "Las cuatro secciones están guardadas offline."
+                            "Counters, sinergias y builds están guardados offline."
                         } else {
                             "$saved de $sectionCount secciones guardadas."
                         }
@@ -267,14 +272,6 @@ class DraftOverlayService : Service() {
                                 { showChampionList() },
                             )
                         }
-                        addAction(actions, "Guía") {
-                            showNativeSectionPage(
-                                content,
-                                champion,
-                                ChampionSection.GUIDE,
-                                { showChampionList() },
-                            )
-                        }
                     }
 
                     row.gravity = Gravity.CENTER_VERTICAL
@@ -332,11 +329,9 @@ class DraftOverlayService : Service() {
             setTextColor(Color.LTGRAY)
             setPadding(dp(6), dp(2), dp(4), dp(2))
         }
-        val body = TextView(this).apply {
-            textSize = 14f
-            setTextColor(Color.WHITE)
-            setTextIsSelectable(true)
-            setPadding(dp(8), dp(8), dp(8), dp(12))
+        val body = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(4), dp(8), dp(4), dp(12))
         }
         val refresh = textButton("Actualizar") {
             loadNativeSection(champion, section, status, body)
@@ -365,15 +360,189 @@ class DraftOverlayService : Service() {
         champion: Champion,
         section: ChampionSection,
         status: TextView,
-        body: TextView,
+        body: LinearLayout,
     ) {
         ChampionSectionRepository.load(this, champion, section) { state ->
             status.text = overlaySectionStatus(section, state)
-            state.content?.let { body.text = it.text }
+            body.removeAllViews()
+            state.content?.let { content ->
+                if (content.cards.isEmpty()) {
+                    val text = TextView(this).apply {
+                        this.text = content.text
+                        textSize = 14f
+                        setTextColor(Color.WHITE)
+                        setTextIsSelectable(true)
+                    }
+                    body.addView(text)
+                } else {
+                    content.cards.forEach { card ->
+                        body.addView(visualCardView(card), LinearLayout.LayoutParams(
+                            LinearLayout.LayoutParams.MATCH_PARENT,
+                            LinearLayout.LayoutParams.WRAP_CONTENT,
+                        ).apply { bottomMargin = dp(8) })
+                    }
+                }
+            }
             if (state.content == null && !state.isRefreshing) {
-                body.text = "No hay copia guardada. Conéctate para descargar esta sección."
+                body.addView(TextView(this).apply {
+                    text = "No hay copia guardada. Conéctate para descargar esta sección."
+                    textSize = 14f
+                    setTextColor(Color.WHITE)
+                })
             }
         }
+    }
+
+    private fun visualCardView(card: ChampionVisualCard): LinearLayout {
+        val container = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(10), dp(9), dp(10), dp(9))
+            background = roundedBackground(Color.rgb(48, 51, 65), dp(12))
+        }
+        card.category?.let { category ->
+            container.addView(TextView(this).apply {
+                text = category
+                textSize = 11f
+                setTextColor(Color.rgb(190, 177, 255))
+            })
+        }
+
+        if (card.items.isNotEmpty()) {
+            container.addView(TextView(this).apply {
+                text = card.title
+                textSize = 15f
+                setTextColor(Color.WHITE)
+                setPadding(0, dp(3), 0, dp(6))
+            })
+            card.detail?.let { detail ->
+                container.addView(TextView(this).apply {
+                    text = detail
+                    textSize = 12f
+                    setTextColor(Color.LTGRAY)
+                })
+            }
+            val items = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+            }
+            card.items.forEachIndexed { index, item ->
+                items.addView(visualItemView(item))
+                if (index < card.items.lastIndex) {
+                    items.addView(TextView(this).apply {
+                        text = "›"
+                        textSize = 22f
+                        setTextColor(Color.LTGRAY)
+                    }, LinearLayout.LayoutParams(dp(18), dp(56)))
+                }
+            }
+            val horizontal = HorizontalScrollView(this).apply {
+                isHorizontalScrollBarEnabled = false
+                addView(items)
+            }
+            container.addView(horizontal, LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+            ).apply { topMargin = dp(6) })
+        } else {
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+            }
+            card.iconUrl?.let { url ->
+                row.addView(visualIcon(url, card.title, dp(48)), LinearLayout.LayoutParams(dp(48), dp(48)).apply {
+                    marginEnd = dp(9)
+                })
+            }
+            val textColumn = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                gravity = Gravity.CENTER_VERTICAL
+            }
+            val titleRow = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+            }
+            titleRow.addView(TextView(this).apply {
+                text = card.title
+                textSize = 14f
+                setTextColor(Color.WHITE)
+            }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+            card.rank?.let { rank ->
+                titleRow.addView(TextView(this).apply {
+                    text = rank
+                    textSize = 12f
+                    setTextColor(Color.WHITE)
+                    gravity = Gravity.CENTER
+                    background = roundedBackground(COLOR_ACCENT, dp(18))
+                    setPadding(dp(8), dp(3), dp(8), dp(3))
+                })
+            }
+            textColumn.addView(titleRow)
+            card.subtitle?.let { subtitle ->
+                textColumn.addView(TextView(this).apply {
+                    text = subtitle
+                    textSize = 11f
+                    setTextColor(Color.LTGRAY)
+                })
+            }
+            card.detail?.let { detail ->
+                textColumn.addView(TextView(this).apply {
+                    text = detail
+                    textSize = 12f
+                    setTextColor(Color.LTGRAY)
+                    maxLines = 5
+                    ellipsize = android.text.TextUtils.TruncateAt.END
+                })
+            }
+            row.addView(textColumn, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+            container.addView(row)
+        }
+        return container
+    }
+
+    private fun visualItemView(item: ChampionVisualItem): LinearLayout {
+        val view = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_HORIZONTAL
+            setPadding(dp(2), 0, dp(2), 0)
+        }
+        item.iconUrl?.let { url ->
+            view.addView(visualIcon(url, item.name, dp(48)), LinearLayout.LayoutParams(dp(48), dp(48)))
+        } ?: view.addView(TextView(this).apply {
+            text = item.name.take(1)
+            textSize = 18f
+            gravity = Gravity.CENTER
+            setTextColor(Color.WHITE)
+            background = roundedBackground(COLOR_ACCENT, dp(10))
+        }, LinearLayout.LayoutParams(dp(48), dp(48)))
+        view.addView(TextView(this).apply {
+            text = item.name
+            textSize = 10f
+            gravity = Gravity.CENTER
+            setTextColor(Color.WHITE)
+            maxLines = 2
+            ellipsize = android.text.TextUtils.TruncateAt.END
+        }, LinearLayout.LayoutParams(dp(64), dp(30)))
+        return view
+    }
+
+    private fun visualIcon(url: String, description: String, size: Int): FrameLayout {
+        val frame = FrameLayout(this)
+        val fallback = TextView(this).apply {
+            text = description.take(1)
+            textSize = 16f
+            gravity = Gravity.CENTER
+            setTextColor(Color.WHITE)
+            background = roundedBackground(COLOR_ACCENT, dp(10))
+        }
+        frame.addView(fallback, FrameLayout.LayoutParams(size, size))
+        val icon = ImageView(this).apply {
+            background = roundedBackground(Color.TRANSPARENT, dp(10))
+            clipToOutline = true
+            outlineProvider = ViewOutlineProvider.BACKGROUND
+        }
+        frame.addView(icon, FrameLayout.LayoutParams(size, size))
+        ChampionIconLoader.loadUrl(url, description, icon)
+        return frame
     }
 
     private fun overlaySectionStatus(
@@ -381,7 +550,7 @@ class DraftOverlayService : Service() {
         state: ChampionSectionState,
     ): String {
         val content = state.content
-        val source = if (section == ChampionSection.GUIDE) "WildRiftFire" else "WildRiftCore"
+        val source = "WildRiftCore"
         return when {
             content == null && state.isRefreshing -> "Descargando copia offline..."
             content == null -> "No se pudo descargar; no hay copia offline"
@@ -457,7 +626,11 @@ class DraftOverlayService : Service() {
             setOnClickListener { onClick() }
         }
 
-    private fun dragListener(view: View, params: WindowManager.LayoutParams, onClick: () -> Unit) =
+    private fun dragListener(
+        windowView: View,
+        params: WindowManager.LayoutParams,
+        onClick: () -> Unit,
+    ) =
         object : View.OnTouchListener {
             private var startX = 0f
             private var startY = 0f
@@ -483,13 +656,13 @@ class DraftOverlayService : Service() {
                         if (moved) {
                             params.x = (originX + dx).coerceIn(
                                 0,
-                                max(0, resources.displayMetrics.widthPixels - view.width),
+                                max(0, resources.displayMetrics.widthPixels - windowView.width),
                             )
                             params.y = (originY + dy).coerceIn(
                                 0,
-                                max(0, resources.displayMetrics.heightPixels - view.height),
+                                max(0, resources.displayMetrics.heightPixels - windowView.height),
                             )
-                            runCatching { windowManager.updateViewLayout(view, params) }
+                            runCatching { windowManager.updateViewLayout(windowView, params) }
                         }
                         return true
                     }
