@@ -27,6 +27,7 @@ data class ChampionSectionContent(
     val sourceUrl: String,
     val fetchedAt: Long,
     val cards: List<ChampionVisualCard> = emptyList(),
+    val championRoles: List<String> = emptyList(),
 )
 
 data class ChampionVisualCard(
@@ -50,6 +51,21 @@ data class ChampionSectionState(
     val isRefreshing: Boolean,
     val error: Boolean,
 )
+
+fun ChampionSectionContent.preferredSynergyRole(): String? = when {
+    "ADC" in championRoles -> "ADC"
+    "Support" in championRoles -> "Support"
+    else -> championRoles.firstOrNull()
+}
+
+fun ChampionSectionContent.synergyCardsForRole(role: String?): List<ChampionVisualCard> =
+    when (role) {
+        "ADC" -> cards.filter { it.subtitle.equals("Support", ignoreCase = true) }
+        "Support" -> cards.sortedBy {
+            if (it.subtitle.equals("ADC", ignoreCase = true)) 0 else 1
+        }
+        else -> cards
+    }
 
 object ChampionSectionRepository {
     private val executor = Executors.newFixedThreadPool(3)
@@ -156,8 +172,23 @@ object ChampionSectionRepository {
             sourceUrl = sourceUrl,
             fetchedAt = System.currentTimeMillis(),
             cards = parseCards(main, section, sourceUrl),
+            championRoles = parseChampionRoles(html),
         )
     }
+
+    private fun parseChampionRoles(html: String): List<String> =
+        CHAMPION_ROLE_REGEX.findAll(html)
+            .flatMap { match ->
+                plainText(match.groupValues[1])
+                    .replace("★", "")
+                    .split(ROLE_SEPARATOR_REGEX)
+            }
+            .map(String::trim)
+            .filter(String::isNotEmpty)
+            .map { role ->
+                roleLabel(role).let { if (it == "Dragon Lane") "ADC" else it }
+            }
+            .distinct()
 
     private fun parseCards(
         html: String,
@@ -364,6 +395,11 @@ object ChampionSectionRepository {
         """<button\b(?=[^>]*class="[^"]*\bnx-role-tab--active\b[^"]*")(?=[^>]*data-role="([^"]+)")[^>]*>""",
         RegexOption.IGNORE_CASE,
     )
+    private val CHAMPION_ROLE_REGEX = Regex(
+        """<span\b(?=[^>]*class="[^"]*\bcd-chip--role\b[^"]*")[^>]*>([\s\S]*?)</span\s*>""",
+        RegexOption.IGNORE_CASE,
+    )
+    private val ROLE_SEPARATOR_REGEX = Regex("""[·/]""")
     private val BEST_PICK_REGEX = Regex("""<li\b[^>]*>([\s\S]*?)</li\s*>""", RegexOption.IGNORE_CASE)
     private val BEST_PICK_NAME_REGEX = Regex(
         """<span\b[^>]*class="nx-md__bname"[^>]*>([\s\S]*?)</span\s*>""",
@@ -479,6 +515,7 @@ private class ChampionSectionDatabase(context: Context) :
                 section_id TEXT NOT NULL,
                 content TEXT NOT NULL,
                 visual_json TEXT NOT NULL DEFAULT '[]',
+                champion_roles TEXT NOT NULL DEFAULT '[]',
                 patch TEXT,
                 source_url TEXT NOT NULL,
                 fetched_at INTEGER NOT NULL,
@@ -492,12 +529,15 @@ private class ChampionSectionDatabase(context: Context) :
         if (oldVersion < 2) {
             db.execSQL("ALTER TABLE $TABLE_NAME ADD COLUMN visual_json TEXT NOT NULL DEFAULT '[]'")
         }
+        if (oldVersion < 3) {
+            db.execSQL("ALTER TABLE $TABLE_NAME ADD COLUMN champion_roles TEXT NOT NULL DEFAULT '[]'")
+        }
     }
 
     fun read(championSlug: String, section: ChampionSection): ChampionSectionContent? =
         readableDatabase.query(
             TABLE_NAME,
-            arrayOf("content", "visual_json", "patch", "source_url", "fetched_at"),
+            arrayOf("content", "visual_json", "patch", "source_url", "fetched_at", "champion_roles"),
             "champion_slug = ? AND section_id = ?",
             arrayOf(championSlug, section.id),
             null,
@@ -513,6 +553,7 @@ private class ChampionSectionDatabase(context: Context) :
                     patch = if (cursor.isNull(2)) null else cursor.getString(2),
                     sourceUrl = cursor.getString(3),
                     fetchedAt = cursor.getLong(4),
+                    championRoles = decodeRoles(cursor.getString(5)),
                 )
             }
         }
@@ -530,6 +571,7 @@ private class ChampionSectionDatabase(context: Context) :
             put("patch", content.patch)
             put("source_url", content.sourceUrl)
             put("fetched_at", content.fetchedAt)
+            put("champion_roles", JSONArray(content.championRoles).toString())
         }
         val rowId = writableDatabase.insertWithOnConflict(
             TABLE_NAME,
@@ -562,6 +604,11 @@ private class ChampionSectionDatabase(context: Context) :
         }
     }.toString()
 
+    private fun decodeRoles(json: String): List<String> = runCatching {
+        val array = JSONArray(json)
+        (0 until array.length()).map(array::getString)
+    }.getOrDefault(emptyList())
+
     private fun decodeCards(json: String): List<ChampionVisualCard> = runCatching {
         val array = JSONArray(json)
         (0 until array.length()).map { index ->
@@ -590,7 +637,7 @@ private class ChampionSectionDatabase(context: Context) :
 
     private companion object {
         const val DATABASE_NAME = "champion_sections.db"
-        const val DATABASE_VERSION = 2
+        const val DATABASE_VERSION = 3
         const val TABLE_NAME = "champion_sections"
     }
 }
