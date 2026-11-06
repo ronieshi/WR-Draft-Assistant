@@ -70,6 +70,8 @@ import com.example.wrdraft.data.ChampionSectionRepository
 import com.example.wrdraft.data.ChampionSectionState
 import com.example.wrdraft.data.ChampionVisualCard
 import com.example.wrdraft.data.ChampionVisualItem
+import com.example.wrdraft.data.preferredSynergyRole
+import com.example.wrdraft.data.synergyCardsForRole
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -377,7 +379,7 @@ private fun InAppSourcePage(page: InAppPage, onBack: () -> Unit) {
     var state by remember(page) {
         mutableStateOf(ChampionSectionState(null, isRefreshing = false, error = false))
     }
-    var selectedRole by remember(page) { mutableStateOf<String?>(null) }
+    var selectedSynergyRole by remember(page) { mutableStateOf<String?>(null) }
     var refreshRequest by remember(page) { mutableStateOf(0) }
     DisposableEffect(page, refreshRequest) {
         var active = true
@@ -423,22 +425,31 @@ private fun InAppSourcePage(page: InAppPage, onBack: () -> Unit) {
                 style = MaterialTheme.typography.bodyMedium,
             )
         } else if (content != null) {
-            val roles = content.cards.mapNotNull { it.role }.distinct()
-            val activeRole = selectedRole?.takeIf { it in roles } ?: roles.firstOrNull()
+            val championRoles = content.championRoles
+            val synergyRole = selectedSynergyRole?.takeIf { it in championRoles }
+                ?: content.preferredSynergyRole()
+            val cards = if (page.section == ChampionSection.SYNERGIES) {
+                content.synergyCardsForRole(synergyRole)
+            } else {
+                content.cards
+            }
             Box(Modifier.weight(1f).fillMaxWidth()) {
                 if (content.cards.isNotEmpty()) {
                     Column(modifier = Modifier.fillMaxSize()) {
-                        if (roles.size > 1) {
+                        if (
+                            page.section == ChampionSection.SYNERGIES &&
+                            championRoles.size > 1
+                        ) {
                             Row(
                                 modifier = Modifier.fillMaxWidth()
                                     .horizontalScroll(rememberScrollState()),
                                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                             ) {
-                                roles.forEach { role ->
-                                    if (role == activeRole) {
+                                championRoles.forEach { role ->
+                                    if (role == synergyRole) {
                                         Button(onClick = {}) { Text(role) }
                                     } else {
-                                        OutlinedButton(onClick = { selectedRole = role }) {
+                                        OutlinedButton(onClick = { selectedSynergyRole = role }) {
                                             Text(role)
                                         }
                                     }
@@ -450,9 +461,11 @@ private fun InAppSourcePage(page: InAppPage, onBack: () -> Unit) {
                                 .verticalScroll(rememberScrollState()),
                             verticalArrangement = Arrangement.spacedBy(10.dp),
                         ) {
-                            content.cards
-                                .filter { activeRole == null || it.role == activeRole }
-                                .forEach { card -> ChampionVisualCardView(card) }
+                            if (cards.isEmpty()) {
+                                Text("No hay soportes registrados en las sinergias de esta fuente.")
+                            } else {
+                                cards.forEach { card -> ChampionVisualCardView(card) }
+                            }
                         }
                     }
                 } else {

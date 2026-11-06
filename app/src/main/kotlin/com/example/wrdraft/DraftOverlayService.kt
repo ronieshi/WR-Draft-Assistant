@@ -37,6 +37,8 @@ import com.example.wrdraft.data.ChampionSectionRepository
 import com.example.wrdraft.data.ChampionSectionState
 import com.example.wrdraft.data.ChampionVisualCard
 import com.example.wrdraft.data.ChampionVisualItem
+import com.example.wrdraft.data.preferredSynergyRole
+import com.example.wrdraft.data.synergyCardsForRole
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -333,8 +335,21 @@ class DraftOverlayService : Service() {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(4), dp(8), dp(4), dp(12))
         }
+        val rolePicker = HorizontalScrollView(this).apply {
+            isHorizontalScrollBarEnabled = false
+            visibility = View.GONE
+        }
+        var selectedSynergyRole: String? = null
         val refresh = textButton("Actualizar") {
-            loadNativeSection(champion, section, status, body)
+            loadNativeSection(
+                champion,
+                section,
+                status,
+                body,
+                rolePicker,
+                selectedSynergyRole = { selectedSynergyRole },
+                onSynergyRoleSelected = { selectedSynergyRole = it },
+            )
         }.apply {
             textSize = 12f
         }
@@ -346,6 +361,10 @@ class DraftOverlayService : Service() {
         }
         page.addView(metadata)
 
+        page.addView(rolePicker, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            dp(42),
+        ).apply { bottomMargin = dp(4) })
         val scroll = ScrollView(this).apply { addView(body) }
         page.addView(scroll, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT,
@@ -353,7 +372,15 @@ class DraftOverlayService : Service() {
             1f,
         ))
         content.addView(page)
-        loadNativeSection(champion, section, status, body)
+        loadNativeSection(
+            champion,
+            section,
+            status,
+            body,
+            rolePicker,
+            selectedSynergyRole = { selectedSynergyRole },
+            onSynergyRoleSelected = { selectedSynergyRole = it },
+        )
     }
 
     private fun loadNativeSection(
@@ -361,27 +388,25 @@ class DraftOverlayService : Service() {
         section: ChampionSection,
         status: TextView,
         body: LinearLayout,
+        rolePicker: HorizontalScrollView,
+        selectedSynergyRole: () -> String?,
+        onSynergyRoleSelected: (String) -> Unit,
     ) {
         ChampionSectionRepository.load(this, champion, section) { state ->
             status.text = overlaySectionStatus(section, state)
-            body.removeAllViews()
-            state.content?.let { content ->
-                if (content.cards.isEmpty()) {
-                    val text = TextView(this).apply {
-                        this.text = content.text
-                        textSize = 14f
-                        setTextColor(Color.WHITE)
-                        setTextIsSelectable(true)
-                    }
-                    body.addView(text)
-                } else {
-                    content.cards.forEach { card ->
-                        body.addView(visualCardView(card), LinearLayout.LayoutParams(
-                            LinearLayout.LayoutParams.MATCH_PARENT,
-                            LinearLayout.LayoutParams.WRAP_CONTENT,
-                        ).apply { bottomMargin = dp(8) })
-                    }
-                }
+            val sectionContent = state.content
+            if (sectionContent != null) {
+                renderNativeSectionContent(
+                    sectionContent,
+                    section,
+                    body,
+                    rolePicker,
+                    selectedSynergyRole(),
+                    onSynergyRoleSelected,
+                )
+            } else {
+                rolePicker.visibility = View.GONE
+                body.removeAllViews()
             }
             if (state.content == null && !state.isRefreshing) {
                 body.addView(TextView(this).apply {
@@ -389,6 +414,79 @@ class DraftOverlayService : Service() {
                     textSize = 14f
                     setTextColor(Color.WHITE)
                 })
+            }
+        }
+    }
+
+    private fun renderNativeSectionContent(
+        content: ChampionSectionContent,
+        section: ChampionSection,
+        body: LinearLayout,
+        rolePicker: HorizontalScrollView,
+        selectedRole: String?,
+        onRoleSelected: (String) -> Unit,
+    ) {
+        val roles = content.championRoles
+        val activeRole = selectedRole?.takeIf { it in roles } ?: content.preferredSynergyRole()
+        rolePicker.removeAllViews()
+        if (section == ChampionSection.SYNERGIES && roles.size > 1) {
+            rolePicker.visibility = View.VISIBLE
+            val roleButtons = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+            }
+            roles.forEach { role ->
+                val button = textButton(
+                    if (role == activeRole) "• $role" else role,
+                ) {
+                    onRoleSelected(role)
+                    renderNativeSectionContent(
+                        content,
+                        section,
+                        body,
+                        rolePicker,
+                        role,
+                        onRoleSelected,
+                    )
+                }
+                roleButtons.addView(button, LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                    dp(34),
+                ).apply { marginEnd = dp(6) })
+            }
+            rolePicker.addView(roleButtons)
+        } else {
+            rolePicker.visibility = View.GONE
+        }
+
+        body.removeAllViews()
+        if (content.cards.isEmpty()) {
+            body.addView(TextView(this).apply {
+                text = content.text
+                textSize = 14f
+                setTextColor(Color.WHITE)
+                setTextIsSelectable(true)
+            })
+            return
+        }
+
+        val cards = if (section == ChampionSection.SYNERGIES) {
+            content.synergyCardsForRole(activeRole)
+        } else {
+            content.cards
+        }
+        if (cards.isEmpty()) {
+            body.addView(TextView(this).apply {
+                text = "No hay soportes registrados en las sinergias de esta fuente."
+                textSize = 14f
+                setTextColor(Color.WHITE)
+            })
+        } else {
+            cards.forEach { card ->
+                body.addView(visualCardView(card), LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                ).apply { bottomMargin = dp(8) })
             }
         }
     }
