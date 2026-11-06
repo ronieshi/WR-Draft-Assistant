@@ -1,17 +1,11 @@
 package com.example.wrdraft
 
-import android.annotation.SuppressLint
 import android.content.Intent
 import android.net.Uri
-import android.net.http.SslError
 import android.provider.Settings
 import android.os.Build
 import android.os.Bundle
-import android.webkit.SslErrorHandler
-import android.webkit.WebResourceRequest
-import android.webkit.WebResourceResponse
-import android.webkit.WebView
-import android.webkit.WebViewClient
+import android.widget.ImageView
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
@@ -30,6 +24,8 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
@@ -41,6 +37,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
@@ -56,7 +53,18 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.example.wrdraft.data.Champion
 import com.example.wrdraft.data.ChampionData
-import com.example.wrdraft.data.ChampionLinks
+import com.example.wrdraft.data.ChampionIconLoader
+import com.example.wrdraft.data.ChampionMetaRepository
+import com.example.wrdraft.data.ChampionWinRate
+import com.example.wrdraft.data.ChampionSection
+import com.example.wrdraft.data.ChampionSectionContent
+import com.example.wrdraft.data.ChampionSectionRepository
+import com.example.wrdraft.data.ChampionSectionState
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+
+private data class InAppPage(val champion: Champion, val section: ChampionSection)
 
 class MainActivity : ComponentActivity() {
     private var waitingForOverlayPermission = false
@@ -127,18 +135,42 @@ class MainActivity : ComponentActivity() {
 fun DraftScreen(onStartOverlay: () -> Unit) {
     val context = LocalContext.current
     var selected by remember { mutableStateOf<Champion?>(null) }
+    var selectedWinRate by remember { mutableStateOf<ChampionWinRate?>(null) }
+    var winRateLoading by remember { mutableStateOf(false) }
+    var winRateFailed by remember { mutableStateOf(false) }
+    var offlineStatus by remember { mutableStateOf("") }
+    var offlinePreparing by remember { mutableStateOf(false) }
     var query by remember { mutableStateOf("") }
-    var buildUrl by remember { mutableStateOf<String?>(null) }
+    var inAppPage by remember { mutableStateOf<InAppPage?>(null) }
+
+    DisposableEffect(selected) {
+        val champion = selected
+        selectedWinRate = null
+        winRateFailed = false
+        winRateLoading = champion != null
+        offlineStatus = ""
+        offlinePreparing = false
+        champion?.let {
+            ChampionMetaRepository.loadWinRate(it) { result ->
+                if (selected == champion) {
+                    selectedWinRate = result.getOrNull()
+                    winRateFailed = result.isFailure || selectedWinRate == null
+                    winRateLoading = false
+                }
+            }
+        }
+        onDispose {}
+    }
 
     val filtered = remember(query) {
         val trimmed = query.trim()
         ChampionData.champions.filter { it.name.contains(trimmed, ignoreCase = true) }
     }
 
-    val currentBuildUrl = buildUrl
-    if (currentBuildUrl != null) {
-        BackHandler { buildUrl = null }
-        InAppBuildPage(url = currentBuildUrl, onBack = { buildUrl = null })
+    val currentPage = inAppPage
+    if (currentPage != null) {
+        BackHandler { inAppPage = null }
+        InAppSourcePage(page = currentPage, onBack = { inAppPage = null })
         return
     }
 
@@ -178,8 +210,43 @@ fun DraftScreen(onStartOverlay: () -> Unit) {
         selected?.let { champion ->
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(champion.name, style = MaterialTheme.typography.titleLarge)
+                WinRateLabel(
+                    winRate = selectedWinRate,
+                    isLoading = winRateLoading,
+                    unavailable = winRateFailed,
+                )
+                OutlinedButton(
+                    onClick = {
+                        offlinePreparing = true
+                        offlineStatus = "Descargando las cuatro secciones..."
+                        ChampionSectionRepository.loadAll(context, champion) { states ->
+                            if (selected == champion) {
+                                val sectionCount = ChampionSection.values().size
+                                val complete = states.size == sectionCount &&
+                                    states.values.none { it.isRefreshing }
+                                if (complete) {
+                                    offlinePreparing = false
+                                    val saved = states.values.count { it.content != null }
+                                    offlineStatus = if (saved == sectionCount) {
+                                        "Las cuatro secciones están guardadas para uso offline."
+                                    } else {
+                                        "$saved de $sectionCount secciones guardadas; " +
+                                            "reintenta cuando haya conexión."
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = !offlinePreparing,
+                ) {
+                    Text(if (offlinePreparing) "Preparando copia offline..." else "Preparar para offline")
+                }
+                if (offlineStatus.isNotEmpty()) {
+                    Text(offlineStatus, style = MaterialTheme.typography.bodySmall)
+                }
                 Text(
-                    "Counters y sinergias de WildRiftCore. Los matchups pueden variar por parche.",
+                    "Datos de WildRiftCore y WildRiftFire. Se muestran como texto nativo y se guardan en este dispositivo al descargarlos.",
                     style = MaterialTheme.typography.bodySmall,
                 )
                 Row(
@@ -188,7 +255,10 @@ fun DraftScreen(onStartOverlay: () -> Unit) {
                 ) {
                     OutlinedButton(
                         onClick = {
-                            openUrl(context, ChampionLinks.wildRiftCoreCountersUrl(champion.slug))
+                            inAppPage = InAppPage(
+                                champion = champion,
+                                section = ChampionSection.COUNTERS,
+                            )
                         },
                         modifier = Modifier.weight(1f),
                     ) {
@@ -196,7 +266,10 @@ fun DraftScreen(onStartOverlay: () -> Unit) {
                     }
                     OutlinedButton(
                         onClick = {
-                            openUrl(context, ChampionLinks.wildRiftCoreSynergiesUrl(champion.slug))
+                            inAppPage = InAppPage(
+                                champion = champion,
+                                section = ChampionSection.SYNERGIES,
+                            )
                         },
                         modifier = Modifier.weight(1f),
                     ) {
@@ -209,7 +282,10 @@ fun DraftScreen(onStartOverlay: () -> Unit) {
                 ) {
                     OutlinedButton(
                         onClick = {
-                            buildUrl = ChampionLinks.wildRiftCoreBuildUrl(champion.slug)
+                            inAppPage = InAppPage(
+                                champion = champion,
+                                section = ChampionSection.BUILD,
+                            )
                         },
                         modifier = Modifier.weight(1f),
                     ) {
@@ -217,7 +293,10 @@ fun DraftScreen(onStartOverlay: () -> Unit) {
                     }
                     OutlinedButton(
                         onClick = {
-                            openUrl(context, ChampionLinks.wildRiftFireUrl(champion.slug))
+                            inAppPage = InAppPage(
+                                champion = champion,
+                                section = ChampionSection.GUIDE,
+                            )
                         },
                         modifier = Modifier.weight(1f),
                     ) {
@@ -254,10 +333,37 @@ fun DraftScreen(onStartOverlay: () -> Unit) {
 }
 
 @Composable
-private fun InAppBuildPage(url: String, onBack: () -> Unit) {
-    var isLoading by remember(url) { mutableStateOf(true) }
-    var hasError by remember(url) { mutableStateOf(false) }
-    var reloadRequest by remember(url) { mutableStateOf(0) }
+private fun WinRateLabel(
+    winRate: ChampionWinRate?,
+    isLoading: Boolean,
+    unavailable: Boolean,
+) {
+    val message = when {
+        isLoading -> "WildRiftCore · win rate últimos 30 días: cargando..."
+        winRate != null ->
+            "WildRiftCore · win rate últimos 30 días: ${"%.2f".format(winRate.percentage)}% · Parche ${winRate.patch}"
+        unavailable -> "WildRiftCore: win rate actual no disponible"
+        else -> ""
+    }
+    if (message.isNotEmpty()) {
+        Text(message, style = MaterialTheme.typography.bodyMedium)
+    }
+}
+
+@Composable
+private fun InAppSourcePage(page: InAppPage, onBack: () -> Unit) {
+    val context = LocalContext.current
+    var state by remember(page) {
+        mutableStateOf(ChampionSectionState(null, isRefreshing = false, error = false))
+    }
+    var refreshRequest by remember(page) { mutableStateOf(0) }
+    DisposableEffect(page, refreshRequest) {
+        var active = true
+        ChampionSectionRepository.load(context, page.champion, page.section) {
+            if (active) state = it
+        }
+        onDispose { active = false }
+    }
 
     Column(
         modifier = Modifier.fillMaxSize().padding(16.dp),
@@ -269,131 +375,71 @@ private fun InAppBuildPage(url: String, onBack: () -> Unit) {
         ) {
             TextButton(onClick = onBack) { Text("Volver") }
             Text(
-                "Build del parche actual",
+                "${page.champion.name}: ${page.section.label}",
                 style = MaterialTheme.typography.titleMedium,
                 modifier = Modifier.padding(start = 8.dp),
             )
         }
-        if (isLoading) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                sectionStatus(page.section, state.content, state.isRefreshing, state.error),
+                style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.weight(1f),
+            )
+            TextButton(onClick = { refreshRequest++ }) { Text("Actualizar") }
+        }
+        if (state.content == null && state.isRefreshing) {
             CircularProgressIndicator(modifier = Modifier.align(Alignment.CenterHorizontally))
         }
-        if (hasError) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    "No se pudo cargar la build. Comprueba tu conexión.",
-                    style = MaterialTheme.typography.bodyMedium,
-                    modifier = Modifier.weight(1f),
-                )
-                TextButton(onClick = {
-                    hasError = false
-                    isLoading = true
-                    reloadRequest++
-                }) {
-                    Text("Reintentar")
+        val content = state.content
+        if (content == null && !state.isRefreshing) {
+            Text(
+                "No hay una copia guardada. Conéctate a internet para descargar esta sección.",
+                style = MaterialTheme.typography.bodyMedium,
+            )
+        } else if (content != null) {
+            Box(Modifier.weight(1f).fillMaxWidth()) {
+                SelectionContainer {
+                    Text(
+                        content.text,
+                        modifier = Modifier.fillMaxWidth().verticalScroll(rememberScrollState()),
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
                 }
             }
         }
-        BuildWebView(
-            url = url,
-            reloadRequest = reloadRequest,
-            onLoadingChanged = { isLoading = it },
-            onLoadError = { hasError = true },
-            modifier = Modifier.weight(1f).fillMaxWidth(),
-        )
     }
 }
 
-@SuppressLint("SetJavaScriptEnabled")
-@Composable
-private fun BuildWebView(
-    url: String,
-    reloadRequest: Int,
-    onLoadingChanged: (Boolean) -> Unit,
-    onLoadError: () -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    val context = LocalContext.current
-    val webView = remember {
-        WebView(context).apply {
-            settings.javaScriptEnabled = true
-            settings.domStorageEnabled = true
-            settings.allowFileAccess = false
-            settings.allowContentAccess = false
-            settings.mixedContentMode = android.webkit.WebSettings.MIXED_CONTENT_NEVER_ALLOW
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                settings.safeBrowsingEnabled = true
-            }
-            webViewClient = object : WebViewClient() {
-                override fun shouldOverrideUrlLoading(
-                    view: WebView,
-                    request: WebResourceRequest,
-                ): Boolean {
-                    val host = request.url.host.orEmpty()
-                    return host != "wildriftcore.com" && !host.endsWith(".wildriftcore.com")
-                }
-
-                override fun onPageStarted(view: WebView, url: String?, favicon: android.graphics.Bitmap?) {
-                    onLoadingChanged(true)
-                }
-
-                override fun onPageCommitVisible(view: WebView, url: String?) {
-                    onLoadingChanged(false)
-                }
-
-                override fun onReceivedError(
-                    view: WebView,
-                    request: WebResourceRequest,
-                    error: android.webkit.WebResourceError,
-                ) {
-                    if (request.isForMainFrame) {
-                        onLoadingChanged(false)
-                        onLoadError()
-                    }
-                }
-
-                override fun onReceivedHttpError(
-                    view: WebView,
-                    request: WebResourceRequest,
-                    errorResponse: WebResourceResponse,
-                ) {
-                    if (request.isForMainFrame && errorResponse.statusCode >= 400) {
-                        onLoadingChanged(false)
-                        onLoadError()
-                    }
-                }
-
-                override fun onReceivedSslError(
-                    view: WebView,
-                    handler: SslErrorHandler,
-                    error: SslError,
-                ) {
-                    handler.cancel()
-                    onLoadingChanged(false)
-                    onLoadError()
-                }
-
-            }
-        }
-    }
-
-    AndroidView(
-        factory = { webView },
-        modifier = modifier,
-        update = { view ->
-            val loadKey = "$url#$reloadRequest"
-            if (view.tag != loadKey) {
-                view.tag = loadKey
-                view.loadUrl(url)
-            }
-        },
-    )
-    DisposableEffect(webView) {
-        onDispose {
-            webView.stopLoading()
-            webView.destroy()
-        }
-    }
+private fun sectionStatus(
+    section: ChampionSection,
+    content: ChampionSectionContent?,
+    isRefreshing: Boolean,
+    error: Boolean,
+): String = when {
+    content == null && isRefreshing -> "Descargando copia para uso offline..."
+    content == null && error -> "No se pudo descargar; no hay copia offline."
+    content != null && isRefreshing ->
+        "Copia guardada · ${section.sourceLabel()} · actualizando..."
+    content != null && error ->
+        "Copia guardada · ${section.sourceLabel()} · ${content.patchLabel()} · " +
+            "${content.fetchedAtLabel()} · no se pudo actualizar"
+    content != null ->
+        "Guardado offline · ${section.sourceLabel()} · ${content.patchLabel()} · ${content.fetchedAtLabel()}"
+    else -> ""
 }
+
+private fun ChampionSection.sourceLabel(): String =
+    if (this == ChampionSection.GUIDE) "WildRiftFire" else "WildRiftCore"
+
+private fun ChampionSectionContent.patchLabel(): String =
+    patch?.let { "Parche $it" } ?: "parche no indicado por la fuente"
+
+private fun ChampionSectionContent.fetchedAtLabel(): String =
+    "descargado ${SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).format(Date(fetchedAt))}"
 
 private fun openUrl(context: android.content.Context, url: String) {
     context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
@@ -434,6 +480,11 @@ fun ChampionTile(champion: Champion, selected: Boolean, onClick: () -> Unit) {
                     text = champion.name.take(1).uppercase(),
                     style = MaterialTheme.typography.titleMedium,
                     color = MaterialTheme.colorScheme.onPrimary,
+                )
+                AndroidView(
+                    factory = { ImageView(it) },
+                    update = { ChampionIconLoader.load(champion, it) },
+                    modifier = Modifier.fillMaxSize().clip(CircleShape),
                 )
             }
             Spacer(Modifier.height(6.dp))
