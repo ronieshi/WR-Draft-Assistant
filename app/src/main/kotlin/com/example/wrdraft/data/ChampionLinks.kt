@@ -1,9 +1,6 @@
 package com.example.wrdraft.data
 
-/**
- * Links to external champion data. Matchups are not copied into the app because
- * their source is patch-dependent and the repository has no full local dataset.
- */
+/** Source URLs for champion data that the app presents natively and caches locally. */
 object ChampionLinks {
     private val wildRiftCoreSlugs = mapOf(
         "chogath" to "cho-gath",
@@ -22,6 +19,9 @@ object ChampionLinks {
     fun wildRiftCoreBuildUrl(slug: String): String =
         "https://wildriftcore.com/en/champions/${wildRiftCoreSlug(slug)}/builds/"
 
+    fun wildRiftCoreProfileUrl(slug: String): String =
+        "https://wildriftcore.com/en/champions/${wildRiftCoreSlug(slug)}/"
+
     fun wildRiftCoreCountersUrl(slug: String): String =
         "https://wildriftcore.com/en/champions/${wildRiftCoreSlug(slug)}/counters/"
 
@@ -30,4 +30,8 @@ object ChampionLinks {
 
     fun wildRiftFireUrl(slug: String): String =
         "https://www.wildriftfire.com/guide/${wildRiftFireSlug(slug)}"
+
+    fun championIconUrl(slug: String): String =
+        "https://wildriftcore.com/assets/champions/icons/${wildRiftCoreSlug(slug)}.webp"
+
 }

@@ -9,7 +9,6 @@ import android.content.Intent
 import android.graphics.Color
 import android.graphics.PixelFormat
 import android.graphics.drawable.GradientDrawable
-import android.net.http.SslError
 import android.os.Build
 import android.os.IBinder
 import android.text.Editable
@@ -18,21 +17,25 @@ import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewConfiguration
+import android.view.ViewOutlineProvider
 import android.view.WindowManager
 import android.view.inputmethod.InputMethodManager
-import android.webkit.SslErrorHandler
-import android.webkit.WebResourceRequest
-import android.webkit.WebResourceResponse
-import android.webkit.WebView
-import android.webkit.WebViewClient
 import android.widget.EditText
 import android.widget.FrameLayout
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import com.example.wrdraft.data.Champion
 import com.example.wrdraft.data.ChampionData
-import com.example.wrdraft.data.ChampionLinks
+import com.example.wrdraft.data.ChampionIconLoader
+import com.example.wrdraft.data.ChampionMetaRepository
+import com.example.wrdraft.data.ChampionSection
+import com.example.wrdraft.data.ChampionSectionContent
+import com.example.wrdraft.data.ChampionSectionRepository
+import com.example.wrdraft.data.ChampionSectionState
+import java.text.SimpleDateFormat
+import java.util.Date
 import java.util.Locale
 import kotlin.math.abs
 import kotlin.math.max
@@ -43,7 +46,6 @@ class DraftOverlayService : Service() {
     private var bubble: TextView? = null
     private var panel: View? = null
     private var overlayParams: WindowManager.LayoutParams? = null
-    private val openWebViews = mutableSetOf<WebView>()
 
     override fun onCreate() {
         super.onCreate()
@@ -128,7 +130,6 @@ class DraftOverlayService : Service() {
                 .hideSoftInputFromWindow(root.windowToken, 0)
             windowManager.removeView(root)
             panel = null
-            destroyEmbeddedPages()
             showBubble()
         }
         header.addView(minimize, LinearLayout.LayoutParams(dp(42), dp(42)))
@@ -158,6 +159,49 @@ class DraftOverlayService : Service() {
         }
         root.addView(selectedLabel)
 
+        val winRateLabel = TextView(this).apply {
+            textSize = 13f
+            setTextColor(Color.LTGRAY)
+            setPadding(dp(2), 0, dp(2), dp(6))
+        }
+        root.addView(winRateLabel)
+        var currentChampion: Champion? = null
+        val offlineLabel = TextView(this).apply {
+            textSize = 12f
+            setTextColor(Color.LTGRAY)
+            setPadding(dp(6), 0, dp(4), 0)
+        }
+        val offlineButton = textButton("Offline") {
+            val champion = currentChampion ?: return@textButton
+            offlineLabel.text = "Descargando las cuatro secciones..."
+            ChampionSectionRepository.loadAll(this@DraftOverlayService, champion) { states ->
+                if (currentChampion == champion) {
+                    val sectionCount = ChampionSection.values().size
+                    val complete = states.size == sectionCount &&
+                        states.values.none { it.isRefreshing }
+                    if (complete) {
+                        val saved = states.values.count { it.content != null }
+                        offlineLabel.text = if (saved == sectionCount) {
+                            "Las cuatro secciones están guardadas offline."
+                        } else {
+                            "$saved de $sectionCount secciones guardadas."
+                        }
+                    }
+                }
+            }
+        }
+        val offlineRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            visibility = View.GONE
+            addView(offlineLabel, LinearLayout.LayoutParams(0, dp(38), 1f))
+            addView(offlineButton, LinearLayout.LayoutParams(dp(82), dp(36)))
+        }
+        root.addView(offlineRow, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            dp(40),
+        ).apply { bottomMargin = dp(4) })
+
         val actions = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             visibility = View.GONE
@@ -175,41 +219,59 @@ class DraftOverlayService : Service() {
 
         fun showChampionList() {
             content.removeAllViews()
-            destroyEmbeddedPages()
             val scroll = ScrollView(this)
             val results = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
             val term = search.text.toString().trim().lowercase(Locale.ROOT)
             ChampionData.champions
                 .filter { it.name.lowercase(Locale.ROOT).contains(term) }
                 .forEach { champion ->
-                    val row = textButton(champion.name) {
+                    val row = championRow(champion) {
+                        currentChampion = champion
                         selectedLabel.text = champion.name
+                        winRateLabel.text = "WildRiftCore · win rate últimos 30 días: cargando..."
                         actions.visibility = View.VISIBLE
+                        offlineRow.visibility = View.VISIBLE
+                        offlineLabel.text = ""
                         actions.removeAllViews()
+                        ChampionMetaRepository.loadWinRate(champion) { result ->
+                            if (currentChampion == champion) {
+                                val winRate = result.getOrNull()
+                                winRateLabel.text = when {
+                                    winRate != null ->
+                                        "WildRiftCore · win rate últimos 30 días: ${"%.2f".format(winRate.percentage)}% · Parche ${winRate.patch}"
+                                    else -> "WildRiftCore: win rate actual no disponible"
+                                }
+                            }
+                        }
                         addAction(actions, "Counters") {
-                            showSourcePage(
+                            showNativeSectionPage(
                                 content,
                                 champion,
-                                ChampionLinks.wildRiftCoreCountersUrl(champion.slug),
-                                "Counterpicks",
+                                ChampionSection.COUNTERS,
                                 { showChampionList() },
                             )
                         }
                         addAction(actions, "Sinergias") {
-                            showSourcePage(
+                            showNativeSectionPage(
                                 content,
                                 champion,
-                                ChampionLinks.wildRiftCoreSynergiesUrl(champion.slug),
-                                "Sinergias",
+                                ChampionSection.SYNERGIES,
                                 { showChampionList() },
                             )
                         }
                         addAction(actions, "Build") {
-                            showSourcePage(
+                            showNativeSectionPage(
                                 content,
                                 champion,
-                                ChampionLinks.wildRiftCoreBuildUrl(champion.slug),
-                                "Build",
+                                ChampionSection.BUILD,
+                                { showChampionList() },
+                            )
+                        }
+                        addAction(actions, "Guía") {
+                            showNativeSectionPage(
+                                content,
+                                champion,
+                                ChampionSection.GUIDE,
                                 { showChampionList() },
                             )
                         }
@@ -248,88 +310,93 @@ class DraftOverlayService : Service() {
         overlayParams = params
     }
 
-    private fun showSourcePage(
+    private fun showNativeSectionPage(
         content: FrameLayout,
         champion: Champion,
-        url: String,
-        section: String,
+        section: ChampionSection,
         onBack: () -> Unit,
     ) {
         (getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager)
             .hideSoftInputFromWindow(content.windowToken, 0)
         content.removeAllViews()
-        destroyEmbeddedPages()
         val page = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
         }
-        val back = textButton("‹  ${champion.name}: $section  ·  Volver") { onBack() }
+        val back = textButton("‹  ${champion.name}: ${section.label}  ·  Volver") { onBack() }
         page.addView(back, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT,
             dp(44),
         ))
 
-        val webView = WebView(this).apply {
-            settings.javaScriptEnabled = true
-            settings.domStorageEnabled = true
-            settings.allowFileAccess = false
-            settings.allowContentAccess = false
-            settings.mixedContentMode = android.webkit.WebSettings.MIXED_CONTENT_NEVER_ALLOW
-            webViewClient = object : WebViewClient() {
-                override fun shouldOverrideUrlLoading(
-                    view: WebView,
-                    request: WebResourceRequest,
-                ): Boolean {
-                    val host = request.url.host.orEmpty()
-                    return host != "wildriftcore.com" && !host.endsWith(".wildriftcore.com")
-                }
-
-                override fun onReceivedError(
-                    view: WebView,
-                    request: WebResourceRequest,
-                    error: android.webkit.WebResourceError,
-                ) {
-                    if (request.isForMainFrame) showPageError(view, url)
-                }
-
-                override fun onReceivedHttpError(
-                    view: WebView,
-                    request: WebResourceRequest,
-                    response: WebResourceResponse,
-                ) {
-                    if (request.isForMainFrame && response.statusCode >= 400) {
-                        showPageError(view, url)
-                    }
-                }
-
-                override fun onReceivedSslError(
-                    view: WebView,
-                    handler: SslErrorHandler,
-                    error: SslError,
-                ) {
-                    handler.cancel()
-                    showPageError(view, url)
-                }
-            }
+        val status = TextView(this).apply {
+            textSize = 12f
+            setTextColor(Color.LTGRAY)
+            setPadding(dp(6), dp(2), dp(4), dp(2))
         }
-        openWebViews.add(webView)
-        page.addView(webView, LinearLayout.LayoutParams(
+        val body = TextView(this).apply {
+            textSize = 14f
+            setTextColor(Color.WHITE)
+            setTextIsSelectable(true)
+            setPadding(dp(8), dp(8), dp(8), dp(12))
+        }
+        val refresh = textButton("Actualizar") {
+            loadNativeSection(champion, section, status, body)
+        }.apply {
+            textSize = 12f
+        }
+        val metadata = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            addView(status, LinearLayout.LayoutParams(0, dp(40), 1f))
+            addView(refresh, LinearLayout.LayoutParams(dp(96), dp(38)))
+        }
+        page.addView(metadata)
+
+        val scroll = ScrollView(this).apply { addView(body) }
+        page.addView(scroll, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT,
             0,
             1f,
         ))
         content.addView(page)
-        webView.loadUrl(url)
+        loadNativeSection(champion, section, status, body)
     }
 
-    private fun showPageError(webView: WebView, url: String) {
-        val errorHtml = """
-            <html><body style="font-family:sans-serif;background:#191b26;color:white;padding:16px">
-            <p>No se pudo cargar esta información. Comprueba tu conexión.</p>
-            <a style="color:#c6b8ff" href="$url">Reintentar</a>
-            </body></html>
-        """.trimIndent()
-        webView.loadDataWithBaseURL(null, errorHtml, "text/html", "UTF-8", null)
+    private fun loadNativeSection(
+        champion: Champion,
+        section: ChampionSection,
+        status: TextView,
+        body: TextView,
+    ) {
+        ChampionSectionRepository.load(this, champion, section) { state ->
+            status.text = overlaySectionStatus(section, state)
+            state.content?.let { body.text = it.text }
+            if (state.content == null && !state.isRefreshing) {
+                body.text = "No hay copia guardada. Conéctate para descargar esta sección."
+            }
+        }
     }
+
+    private fun overlaySectionStatus(
+        section: ChampionSection,
+        state: ChampionSectionState,
+    ): String {
+        val content = state.content
+        val source = if (section == ChampionSection.GUIDE) "WildRiftFire" else "WildRiftCore"
+        return when {
+            content == null && state.isRefreshing -> "Descargando copia offline..."
+            content == null -> "No se pudo descargar; no hay copia offline"
+            state.isRefreshing -> "Copia offline · $source · actualizando..."
+            state.error -> "Copia offline · $source · ${content.patch?.let { "Parche $it" } ?: "parche sin indicar"}" +
+                " · ${content.fetchedAtLabel()} · no se pudo actualizar"
+            else -> "Guardado offline · $source · " +
+                (content.patch?.let { "Parche $it" } ?: "parche sin indicar") +
+                " · ${content.fetchedAtLabel()}"
+        }
+    }
+
+    private fun ChampionSectionContent.fetchedAtLabel(): String =
+        SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).format(Date(fetchedAt))
 
     private fun addAction(parent: LinearLayout, label: String, onClick: () -> Unit) {
         val button = textButton(label, onClick).apply {
@@ -339,6 +406,45 @@ class DraftOverlayService : Service() {
         parent.addView(button, LinearLayout.LayoutParams(0, dp(40), 1f).apply {
             marginEnd = dp(4)
         })
+    }
+
+    private fun championRow(champion: Champion, onClick: () -> Unit): LinearLayout {
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(6), dp(2), dp(8), dp(2))
+            background = roundedBackground(Color.rgb(48, 51, 65), dp(10))
+            setOnClickListener { onClick() }
+        }
+        val iconFrame = FrameLayout(this)
+        val fallback = TextView(this).apply {
+            text = champion.name.take(1).uppercase()
+            textSize = 16f
+            gravity = Gravity.CENTER
+            setTextColor(Color.WHITE)
+            background = roundedBackground(COLOR_ACCENT, dp(22))
+        }
+        iconFrame.addView(fallback, FrameLayout.LayoutParams(dp(40), dp(40)))
+        val icon = ImageView(this).apply {
+            background = roundedBackground(Color.TRANSPARENT, dp(22))
+            clipToOutline = true
+            outlineProvider = ViewOutlineProvider.BACKGROUND
+        }
+        iconFrame.addView(icon, FrameLayout.LayoutParams(dp(40), dp(40)))
+        ChampionIconLoader.load(champion, icon)
+        row.addView(iconFrame, LinearLayout.LayoutParams(dp(40), dp(40)).apply {
+            marginEnd = dp(10)
+        })
+        val name = TextView(this).apply {
+            text = champion.name
+            textSize = 16f
+            setTextColor(Color.WHITE)
+        }
+        row.addView(name, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            LinearLayout.LayoutParams.MATCH_PARENT,
+        ))
+        return row
     }
 
     private fun textButton(label: String, onClick: () -> Unit): TextView =
@@ -414,20 +520,11 @@ class DraftOverlayService : Service() {
             gravity = Gravity.TOP or Gravity.START
         }
 
-    private fun destroyEmbeddedPages() {
-        openWebViews.toList().forEach { webView ->
-            openWebViews.remove(webView)
-            webView.stopLoading()
-            webView.destroy()
-        }
-    }
-
     private fun closeOverlayViews() {
         panel?.let {
             runCatching { windowManager.removeViewImmediate(it) }
         }
         bubble?.let { runCatching { windowManager.removeViewImmediate(it) } }
-        destroyEmbeddedPages()
         panel = null
         bubble = null
         overlayParams = null
