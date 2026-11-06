@@ -189,6 +189,7 @@ object ChampionSectionRepository {
                 roleLabel(role).let { if (it == "Dragon Lane") "ADC" else it }
             }
             .distinct()
+            .toList()
 
     private fun parseCards(
         html: String,
