@@ -253,9 +253,32 @@ class DraftOverlayService : Service() {
             content,
             LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f),
         )
+        val selectionChrome = listOf(search, selectedHeader, winRateLabel, offlineRow, actionsScroll)
+
+        fun hideSelectionChrome() {
+            selectionChrome.forEach { it.visibility = View.GONE }
+        }
+
+        fun showSelectionChrome() {
+            selectionChrome.forEach { view ->
+                view.visibility = when (view) {
+                    selectedHeader -> View.VISIBLE
+                    search -> View.VISIBLE
+                    winRateLabel -> if (currentChampion != null) View.VISIBLE else View.GONE
+                    offlineRow -> if (currentChampion != null) View.VISIBLE else View.GONE
+                    actionsScroll -> if (currentChampion != null && actionsExpanded) {
+                        View.VISIBLE
+                    } else {
+                        View.GONE
+                    }
+                    else -> View.VISIBLE
+                }
+            }
+        }
 
         fun showChampionList() {
             content.removeAllViews()
+            showSelectionChrome()
             val scroll = ScrollView(this)
             val results = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
             val term = search.text.toString().trim().lowercase(Locale.ROOT)
@@ -288,7 +311,8 @@ class DraftOverlayService : Service() {
                                 content,
                                 champion,
                                 ChampionSection.COUNTERS,
-                                { showChampionList() },
+                                onEnterExplore = ::hideSelectionChrome,
+                                onBack = { showChampionList() },
                             )
                         }
                         addAction(actions, "Sinergias") {
@@ -296,7 +320,8 @@ class DraftOverlayService : Service() {
                                 content,
                                 champion,
                                 ChampionSection.SYNERGIES,
-                                { showChampionList() },
+                                onEnterExplore = ::hideSelectionChrome,
+                                onBack = { showChampionList() },
                             )
                         }
                         addAction(actions, "Build") {
@@ -304,7 +329,8 @@ class DraftOverlayService : Service() {
                                 content,
                                 champion,
                                 ChampionSection.BUILD,
-                                { showChampionList() },
+                                onEnterExplore = ::hideSelectionChrome,
+                                onBack = { showChampionList() },
                             )
                         }
                     }
@@ -351,10 +377,12 @@ class DraftOverlayService : Service() {
         content: FrameLayout,
         champion: Champion,
         section: ChampionSection,
+        onEnterExplore: () -> Unit,
         onBack: () -> Unit,
     ) {
         (getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager)
             .hideSoftInputFromWindow(content.windowToken, 0)
+        onEnterExplore()
         content.removeAllViews()
         val page = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
