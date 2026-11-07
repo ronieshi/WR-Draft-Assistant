@@ -6,6 +6,7 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
 import android.content.Intent
+import android.content.res.Configuration
 import android.graphics.Color
 import android.graphics.PixelFormat
 import android.graphics.drawable.GradientDrawable
@@ -158,13 +159,46 @@ class DraftOverlayService : Service() {
             dp(48),
         ).apply { bottomMargin = dp(8) })
 
+        val actions = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+        }
+        val actionsScroll = HorizontalScrollView(this).apply {
+            isHorizontalScrollBarEnabled = false
+            visibility = View.GONE
+            addView(actions)
+        }
+        var actionsExpanded = true
         val selectedLabel = TextView(this).apply {
             text = "Selecciona un campeón"
             textSize = 15f
             setTextColor(Color.WHITE)
             setPadding(dp(2), dp(4), dp(2), dp(4))
         }
-        root.addView(selectedLabel)
+        val actionsToggle = TextView(this).apply {
+            text = "Secciones ▾"
+            textSize = 12f
+            gravity = Gravity.CENTER
+            setTextColor(Color.WHITE)
+            background = roundedBackground(Color.rgb(72, 62, 115), dp(10))
+            setPadding(dp(8), dp(4), dp(8), dp(4))
+            visibility = View.GONE
+            contentDescription = "Mostrar u ocultar los botones de secciones"
+            setOnClickListener {
+                actionsExpanded = !actionsExpanded
+                actionsScroll.visibility = if (actionsExpanded) View.VISIBLE else View.GONE
+                text = if (actionsExpanded) "Secciones ▾" else "Secciones ▸"
+            }
+        }
+        val selectedHeader = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            addView(selectedLabel, LinearLayout.LayoutParams(0, dp(38), 1f))
+            addView(actionsToggle, LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                dp(34),
+            ))
+        }
+        root.addView(selectedHeader)
 
         val winRateLabel = TextView(this).apply {
             textSize = 13f
@@ -209,11 +243,7 @@ class DraftOverlayService : Service() {
             dp(40),
         ).apply { bottomMargin = dp(4) })
 
-        val actions = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            visibility = View.GONE
-        }
-        root.addView(actions, LinearLayout.LayoutParams(
+        root.addView(actionsScroll, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT,
             dp(44),
         ).apply { bottomMargin = dp(8) })
@@ -235,8 +265,11 @@ class DraftOverlayService : Service() {
                     val row = championRow(champion) {
                         currentChampion = champion
                         selectedLabel.text = champion.name
+                        actionsExpanded = true
+                        actionsToggle.text = "Secciones ▾"
+                        actionsToggle.visibility = View.VISIBLE
                         winRateLabel.text = "WildRiftCore · win rate últimos 30 días: cargando..."
-                        actions.visibility = View.VISIBLE
+                        actionsScroll.visibility = View.VISIBLE
                         offlineRow.visibility = View.VISIBLE
                         offlineLabel.text = ""
                         actions.removeAllViews()
@@ -295,8 +328,14 @@ class DraftOverlayService : Service() {
         })
         showChampionList()
 
-        params.width = min(dp(340), resources.displayMetrics.widthPixels - dp(24))
-        params.height = min(dp(560), (resources.displayMetrics.heightPixels * 0.78f).toInt())
+        val isLandscape =
+            resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
+        val availableWidth = resources.displayMetrics.widthPixels - dp(24)
+        params.width = min(if (isLandscape) dp(720) else dp(340), availableWidth)
+        params.height = min(
+            if (isLandscape) dp(620) else dp(560),
+            (resources.displayMetrics.heightPixels * if (isLandscape) 0.9f else 0.78f).toInt(),
+        )
         params.flags = WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
         params.softInputMode = WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE
         val maxX = max(0, resources.displayMetrics.widthPixels - params.width)
@@ -669,7 +708,7 @@ class DraftOverlayService : Service() {
             textSize = 13f
             gravity = Gravity.CENTER
         }
-        parent.addView(button, LinearLayout.LayoutParams(0, dp(40), 1f).apply {
+        parent.addView(button, LinearLayout.LayoutParams(dp(108), dp(40)).apply {
             marginEnd = dp(4)
         })
     }
@@ -707,8 +746,9 @@ class DraftOverlayService : Service() {
             setTextColor(Color.WHITE)
         }
         row.addView(name, LinearLayout.LayoutParams(
+            0,
             LinearLayout.LayoutParams.MATCH_PARENT,
-            LinearLayout.LayoutParams.MATCH_PARENT,
+            1f,
         ))
         return row
     }
