@@ -34,6 +34,7 @@ import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
@@ -77,6 +78,10 @@ import java.util.Date
 import java.util.Locale
 
 private data class InAppPage(val champion: Champion, val section: ChampionSection)
+
+private const val DONATION_URL = "https://www.paypal.com/paypalme/ronieshi"
+private const val TIKTOK_URL = "https://www.tiktok.com/@ronieshi"
+private const val INSTAGRAM_URL = "https://www.instagram.com/ronieshi"
 
 class MainActivity : ComponentActivity() {
     private var waitingForOverlayPermission = false
@@ -176,6 +181,7 @@ fun DraftScreen(
     var offlinePreparing by remember { mutableStateOf(false) }
     var query by remember { mutableStateOf("") }
     var inAppPage by remember { mutableStateOf<InAppPage?>(null) }
+    var showInfoDialog by remember { mutableStateOf(false) }
 
     DisposableEffect(selected) {
         val champion = selected
@@ -262,6 +268,60 @@ fun DraftScreen(
                     contentDescription = if (darkTheme) "Activar tema claro" else "Activar tema oscuro",
                 )
             }
+            IconButton(onClick = { showInfoDialog = true }) {
+                Icon(
+                    painter = painterResource(R.drawable.ic_info),
+                    contentDescription = "Información, donaciones y redes sociales",
+                )
+            }
+        }
+        if (showInfoDialog) {
+            AlertDialog(
+                onDismissRequest = { showInfoDialog = false },
+                title = { Text("Información") },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        TextButton(
+                            onClick = {
+                                showInfoDialog = false
+                                context.startActivity(
+                                    Intent(Intent.ACTION_VIEW, Uri.parse(DONATION_URL)),
+                                )
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Text("Donar con PayPal", modifier = Modifier.fillMaxWidth())
+                        }
+                        TextButton(
+                            onClick = {
+                                showInfoDialog = false
+                                context.startActivity(
+                                    Intent(Intent.ACTION_VIEW, Uri.parse(TIKTOK_URL)),
+                                )
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Text("TikTok · @ronieshi", modifier = Modifier.fillMaxWidth())
+                        }
+                        TextButton(
+                            onClick = {
+                                showInfoDialog = false
+                                context.startActivity(
+                                    Intent(Intent.ACTION_VIEW, Uri.parse(INSTAGRAM_URL)),
+                                )
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Text("Instagram · @ronieshi", modifier = Modifier.fillMaxWidth())
+                        }
+                    }
+                },
+                confirmButton = {
+                    TextButton(onClick = { showInfoDialog = false }) {
+                        Text("Cerrar")
+                    }
+                },
+            )
         }
         if (offlineStatus.isNotEmpty()) {
             Text(offlineStatus, style = MaterialTheme.typography.bodySmall)
