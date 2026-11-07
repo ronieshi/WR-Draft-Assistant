@@ -253,6 +253,25 @@ class DraftOverlayService : Service() {
             content,
             LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f),
         )
+        val resizeGrip = TextView(this).apply {
+            text = "◢"
+            textSize = 18f
+            gravity = Gravity.CENTER
+            setTextColor(Color.LTGRAY)
+            contentDescription = "Arrastra para redimensionar la ventana"
+            background = roundedBackground(Color.rgb(48, 51, 65), dp(8))
+        }
+        resizeGrip.setOnTouchListener(resizeListener(root, params))
+        val resizeHandle = FrameLayout(this).apply {
+            addView(
+                resizeGrip,
+                FrameLayout.LayoutParams(dp(44), dp(36), Gravity.END or Gravity.CENTER_VERTICAL),
+            )
+        }
+        root.addView(
+            resizeHandle,
+            LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(40)),
+        )
         val selectionChrome = listOf(search, selectedHeader, winRateLabel, offlineRow, actionsScroll)
 
         fun hideSelectionChrome() {
@@ -841,6 +860,50 @@ class DraftOverlayService : Service() {
                 return false
             }
         }
+
+    private fun resizeListener(
+        windowView: View,
+        params: WindowManager.LayoutParams,
+    ) = object : View.OnTouchListener {
+        private var startX = 0f
+        private var startY = 0f
+        private var startWidth = 0
+        private var startHeight = 0
+        private var resizing = false
+        private val touchSlop = ViewConfiguration.get(this@DraftOverlayService).scaledTouchSlop
+
+        override fun onTouch(view: View, event: MotionEvent): Boolean {
+            when (event.action) {
+                MotionEvent.ACTION_DOWN -> {
+                    startX = event.rawX
+                    startY = event.rawY
+                    startWidth = params.width
+                    startHeight = params.height
+                    resizing = false
+                    return true
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    val dx = (event.rawX - startX).toInt()
+                    val dy = (event.rawY - startY).toInt()
+                    if (abs(dx) > touchSlop || abs(dy) > touchSlop) resizing = true
+                    if (resizing) {
+                        val screenWidth = resources.displayMetrics.widthPixels
+                        val screenHeight = resources.displayMetrics.heightPixels
+                        val maxWidth = (screenWidth - params.x - dp(12)).coerceAtLeast(1)
+                        val maxHeight = (screenHeight - params.y - dp(24)).coerceAtLeast(1)
+                        val minWidth = min(dp(260), maxWidth)
+                        val minHeight = min(dp(240), maxHeight)
+                        params.width = (startWidth + dx).coerceIn(minWidth, maxWidth)
+                        params.height = (startHeight + dy).coerceIn(minHeight, maxHeight)
+                        runCatching { windowManager.updateViewLayout(windowView, params) }
+                    }
+                    return true
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> return true
+            }
+            return false
+        }
+    }
 
     private fun overlayLayoutParams(width: Int, height: Int, flags: Int) =
         WindowManager.LayoutParams(
