@@ -1,17 +1,22 @@
 package com.example.wrdraft
 
 import android.os.Bundle
+import android.widget.ImageView
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -28,10 +33,15 @@ import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.unit.dp
 import com.example.wrdraft.data.Champion
 import com.example.wrdraft.data.ChampionData
+import com.example.wrdraft.data.ChampionIconLoader
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.UUID
@@ -85,27 +95,29 @@ private fun DraftHistoryScreen(
     ) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
             Text("Mis drafts", style = MaterialTheme.typography.headlineSmall)
-            if (!editing) Button(onClick = {
-                own = ""
-                won = List(5) { "" }
-                lost = List(5) { "" }
-                editing = true
-            }) { Text("+ Añadir") }
+            if (!editing) {
+                Button(onClick = {
+                    own = ""
+                    won = List(5) { "" }
+                    lost = List(5) { "" }
+                    editing = true
+                }) { Text("+ Añadir") }
+            }
         }
         Text("Historial guardado solo en este dispositivo.", style = MaterialTheme.typography.bodyMedium)
 
         if (editing) {
-            Text("Mi campeón", style = MaterialTheme.typography.titleMedium)
+            Text("Mi equipo", style = MaterialTheme.typography.titleMedium)
             ChampionSlot(
-                label = "Seleccionar campeón propio",
+                label = "Mi campeón",
                 championSlug = own,
                 onClick = { picker = PickerTarget("own", -1) },
             )
-            Text("Gané contra", style = MaterialTheme.typography.titleMedium)
+            Text("Victoria", style = MaterialTheme.typography.titleMedium)
             ROLE_NAMES.forEachIndexed { index, role ->
                 ChampionSlot(role, won[index]) { picker = PickerTarget("won", index) }
             }
-            Text("Perdí contra", style = MaterialTheme.typography.titleMedium)
+            Text("Derrota", style = MaterialTheme.typography.titleMedium)
             ROLE_NAMES.forEachIndexed { index, role ->
                 ChampionSlot(role, lost[index]) { picker = PickerTarget("lost", index) }
             }
@@ -151,20 +163,38 @@ private data class PickerTarget(val group: String, val index: Int)
 
 @Composable
 private fun ChampionSlot(label: String, championSlug: String, onClick: () -> Unit) {
-    val champ = ChampionData.champions.firstOrNull { it.slug == championSlug }
-    OutlinedButton(onClick = onClick, modifier = Modifier.fillMaxWidth()) {
-        Text("$label: ${champ?.name ?: "Elegir campeón"}")
+    val champion = ChampionData.champions.firstOrNull { it.slug == championSlug }
+    Surface(
+        onClick = onClick,
+        shape = RoundedCornerShape(12.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant,
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Row(
+            modifier = Modifier.padding(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            ChampionPortrait(champion, Modifier.size(52.dp))
+            Column {
+                Text(label, style = MaterialTheme.typography.labelMedium)
+                Text(champion?.name ?: "Elegir campeón", style = MaterialTheme.typography.titleSmall)
+            }
+        }
     }
 }
 
 @Composable
 private fun ChampionPicker(onDismiss: () -> Unit, onSelect: (Champion) -> Unit) {
     var query by remember { mutableStateOf("") }
+    val filtered = remember(query) {
+        ChampionData.champions.filter { it.name.contains(query.trim(), ignoreCase = true) }
+    }
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Elegir campeón") },
         text = {
-            Column {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 TextField(
                     value = query,
                     onValueChange = { query = it },
@@ -173,9 +203,20 @@ private fun ChampionPicker(onDismiss: () -> Unit, onSelect: (Champion) -> Unit) 
                     modifier = Modifier.fillMaxWidth(),
                 )
                 LazyColumn {
-                    items(ChampionData.champions.filter { it.name.contains(query.trim(), true) }, key = { it.slug }) { champion ->
-                        TextButton(onClick = { onSelect(champion) }, modifier = Modifier.fillMaxWidth()) {
-                            Text(champion.name, modifier = Modifier.fillMaxWidth())
+                    items(filtered, key = { it.slug }) { champion ->
+                        Surface(
+                            onClick = { onSelect(champion) },
+                            modifier = Modifier.fillMaxWidth(),
+                            color = MaterialTheme.colorScheme.surface,
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(vertical = 6.dp, horizontal = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                            ) {
+                                ChampionPortrait(champion, Modifier.size(44.dp))
+                                Text(champion.name, style = MaterialTheme.typography.bodyLarge)
+                            }
                         }
                     }
                 }
@@ -186,26 +227,78 @@ private fun ChampionPicker(onDismiss: () -> Unit, onSelect: (Champion) -> Unit) 
 }
 
 @Composable
-private fun DraftCard(draft: DraftRecord, onDelete: () -> Unit) {
-    val ownName = ChampionData.champions.firstOrNull { it.slug == draft.ownChampion }?.name ?: draft.ownChampion
-    Card(Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Text("Mi campeón: $ownName", style = MaterialTheme.typography.titleMedium)
-            Text("Gané contra", style = MaterialTheme.typography.labelLarge)
-            Text(formatRoles(draft.wonAgainst))
-            Text("Perdí contra", style = MaterialTheme.typography.labelLarge)
-            Text(formatRoles(draft.lostAgainst))
-            TextButton(onClick = onDelete) { Text("Eliminar") }
+private fun ChampionPortrait(champion: Champion?, modifier: Modifier = Modifier) {
+    Box(
+        modifier = modifier.clip(CircleShape),
+        contentAlignment = Alignment.Center,
+    ) {
+        Surface(
+            modifier = Modifier.fillMaxSize(),
+            color = MaterialTheme.colorScheme.primaryContainer,
+            shape = CircleShape,
+        ) {
+            Box(contentAlignment = Alignment.Center) {
+                Text(
+                    champion?.name?.take(1)?.uppercase() ?: "?",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.onPrimaryContainer,
+                )
+            }
+        }
+        if (champion != null) {
+            AndroidView(
+                factory = { ImageView(it) },
+                update = { ChampionIconLoader.load(champion, it) },
+                modifier = Modifier.fillMaxSize().clip(CircleShape),
+            )
         }
     }
 }
 
-private fun formatRoles(slugs: List<String>): String = ROLE_NAMES.mapIndexedNotNull { index, role ->
-    slugs.getOrNull(index)?.takeIf { it.isNotBlank() }?.let { slug ->
-        val name = ChampionData.champions.firstOrNull { it.slug == slug }?.name ?: slug
-        "$role: $name"
+@Composable
+private fun DraftCard(draft: DraftRecord, onDelete: () -> Unit) {
+    val ownChampion = ChampionData.champions.firstOrNull { it.slug == draft.ownChampion }
+    Card(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                ChampionPortrait(ownChampion, Modifier.size(64.dp))
+                Column {
+                    Text("Mi campeón", style = MaterialTheme.typography.labelMedium)
+                    Text(ownChampion?.name ?: draft.ownChampion, style = MaterialTheme.typography.titleMedium)
+                }
+            }
+            MatchupGroup("Victoria", draft.wonAgainst)
+            MatchupGroup("Derrota", draft.lostAgainst)
+            TextButton(onClick = onDelete) { Text("Eliminar draft") }
+        }
     }
-}.ifEmpty { listOf("Sin campeones registrados") }.joinToString(" · ")
+}
+
+@Composable
+private fun MatchupGroup(title: String, slugs: List<String>) {
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Text(title, style = MaterialTheme.typography.labelLarge)
+        val matchups = ROLE_NAMES.mapIndexedNotNull { index, role ->
+            slugs.getOrNull(index)?.takeIf(String::isNotBlank)?.let { slug ->
+                role to ChampionData.champions.firstOrNull { it.slug == slug }
+            }
+        }
+        if (matchups.isEmpty()) {
+            Text("Sin campeones registrados", style = MaterialTheme.typography.bodySmall)
+        } else {
+            matchups.forEach { (role, champion) ->
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    ChampionPortrait(champion, Modifier.size(36.dp))
+                    Text(role, style = MaterialTheme.typography.labelMedium)
+                    Text(champion?.name ?: "Campeón desconocido", style = MaterialTheme.typography.bodyMedium)
+                }
+            }
+        }
+    }
+}
 
 private fun encodeDrafts(drafts: List<DraftRecord>): String = JSONArray().apply {
     drafts.forEach { draft ->

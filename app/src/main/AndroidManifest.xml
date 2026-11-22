@@ -21,12 +21,10 @@
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="User-controlled Wild Rift draft helper overlay"/>
         </service>
-        <activity android:name=".DraftHistoryActivity" android:exported="true" android:label="Historial de drafts">
-            <intent-filter>
-                <action android:name="android.intent.action.MAIN"/>
-                <category android:name="android.intent.category.LAUNCHER"/>
-            </intent-filter>
-        </activity>
+        <activity
+            android:name=".DraftHistoryActivity"
+            android:exported="false"
+            android:label="Historial de drafts"/>
         <activity android:name=".MainActivity" android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN"/>

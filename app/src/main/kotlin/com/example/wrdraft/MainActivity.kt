@@ -229,6 +229,13 @@ fun DraftScreen(
             )
             IconButton(
                 onClick = {
+                    context.startActivity(Intent(context, DraftHistoryActivity::class.java))
+                },
+            ) {
+                Text("+", style = MaterialTheme.typography.titleLarge)
+            }
+            IconButton(
+                onClick = {
                     val champion = selected ?: return@IconButton
                     offlinePreparing = true
                     offlineStatus = "Descargando counterpicks, sinergias y builds..."
